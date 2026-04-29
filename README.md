@@ -2,12 +2,14 @@
 
 > A lazygit-style TUI for managing skills, subagents, MCP servers, prompts and memory across **Claude Code**, **Codex** and **Gemini CLI** — one tree, one hotkey to share between tools.
 
+<p align="center">
+  <img src="assets/tui-overview.png" alt="lazyagent — main view: tree of tools and kinds on the left, rendered SKILL.md detail on the right" width="900">
+</p>
+
 <!--
-demo asset (PRI-15): replace this block with the asciinema embed + gif fallback once
-assets/demo.cast and assets/demo.gif land. Until then a static placeholder keeps the
-section structurally complete.
+animated demo (PRI-15): replace the static screenshot with an asciinema embed
+or assets/demo.gif once recorded.
 -->
-<p align="center"><em>(demo gif — coming with v0.1)</em></p>
 
 ---
 
@@ -127,6 +129,10 @@ The shared store at `~/.lazyagent/store/` holds one canonical copy of each item 
 ```
 
 Pressing `s` on any per-tool item opens a multi-select picker (`[x] Claude  [x] Codex  [x] Gemini`), moves the bytes into the store, and projects them back to each selected tool — symlink by default, byte-copy on iCloud / Dropbox / OneDrive / Google Drive volumes where symlinks don't sync. Pressing `s` again on a shared item lets you change the projection set; pressing `R` on an item the detector flagged with `(drift)` opens the canonical-vs-tool resync overlay.
+
+<p align="center">
+  <img src="assets/detail-zoom.png" alt="Zoomed detail view of a shared skill — note the canonical path under ~/.lazyagent/store/ and the json/toml/back footer" width="900">
+</p>
 
 ## Roadmap
 
