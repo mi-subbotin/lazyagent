@@ -243,6 +243,15 @@ type externalEditDoneMsg struct {
 	err  error
 }
 
+// resumeDoneMsg arrives after the upstream CLI (claude / gemini / codex)
+// spawned via tea.ExecProcess for `R` on a KindSession item exits. The
+// session's transcript almost always grew during the resume, so we
+// drop the cached body for it and trigger a full reload.
+type resumeDoneMsg struct {
+	path string
+	err  error
+}
+
 func (m Model) Init() tea.Cmd {
 	return m.loadCmd()
 }
@@ -322,6 +331,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.setToast("editor: " + msg.err.Error())
+		}
+		m.loading = true
+		return m, m.loadCmd()
+
+	case resumeDoneMsg:
+		// Upstream CLI exited. The session's transcript and lastUpdated
+		// almost certainly changed; nuke both caches and reload.
+		delete(m.sessionBodyCache, msg.path)
+		for k := range m.glamourCache {
+			if strings.HasPrefix(k, msg.path+"|") {
+				delete(m.glamourCache, k)
+			}
+		}
+		if msg.err != nil {
+			m.setToast("resume: " + msg.err.Error())
 		}
 		m.loading = true
 		return m, m.loadCmd()
@@ -442,6 +466,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			it, ok := m.currentItem()
 			if !ok {
 				return m, nil
+			}
+			// Sessions: resume the conversation in the upstream CLI
+			// (claude / gemini / codex). Other kinds: resync drifted
+			// shared projections back to canonical. Same key, different
+			// semantics per Kind — both are "Restart" gestures.
+			if it.Kind == model.KindSession {
+				cmd, err := actions.ResumeCommand(it, m.projectDir)
+				if err != nil {
+					m.setToast(err.Error())
+					return m, nil
+				}
+				path := it.Path
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return resumeDoneMsg{path: path, err: err}
+				})
 			}
 			if !it.Drift {
 				m.setToast("not drifted — nothing to resync")
@@ -1195,6 +1234,9 @@ func (m Model) defaultStatusLine() string {
 		if it.Drift {
 			ctx = append(ctx, "R resync")
 		}
+		if it.Kind == model.KindSession {
+			ctx = append(ctx, "R resume")
+		}
 		return " " + strings.Join(append(ctx, tail...), " · ") + " "
 	}
 
@@ -1236,7 +1278,7 @@ func helpText() string {
 		"  m        move item to the other scope\n" +
 		"  x        cross-tool copy (pick target Origin / scope)\n" +
 		"  s        share to lazyagent store + project to selected tools\n" +
-		"  R        resync drifted shared item (canonical / tool wins)\n" +
+		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  e        open in $EDITOR (external)\n" +
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
