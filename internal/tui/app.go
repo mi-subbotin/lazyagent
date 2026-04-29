@@ -16,6 +16,7 @@ import (
 
 	"github.com/mi-subbotin/lazyagent/internal/actions"
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/store"
 )
@@ -179,15 +180,24 @@ type Model struct {
 	// reference types, so mutations persist across the value-typed Model
 	// copies bubbletea passes through Update.
 	glamourCache map[string][]string
+
+	// sessionBodyCache memoizes the raw markdown transcript (pre-glamour)
+	// for KindSession items. Keyed by Item.Path. Built on first detail
+	// access and dropped on reload (`r`) — long sessions are too
+	// expensive to parse every render cycle. Active sessions accumulate
+	// new turns on disk, so the cache will go stale until the user
+	// reloads; this is documented so the trade-off is explicit.
+	sessionBodyCache map[string]string
 }
 
 func New(srcs []sources.Source, projectDir string) Model {
 	return Model{
-		srcs:         srcs,
-		projectDir:   projectDir,
-		expanded:     defaultExpanded(),
-		loading:      true,
-		glamourCache: map[string][]string{},
+		srcs:             srcs,
+		projectDir:       projectDir,
+		expanded:         defaultExpanded(),
+		loading:          true,
+		glamourCache:     map[string][]string{},
+		sessionBodyCache: map[string]string{},
 	}
 }
 
@@ -380,6 +390,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			for k := range m.glamourCache {
 				delete(m.glamourCache, k)
+			}
+			for k := range m.sessionBodyCache {
+				delete(m.sessionBodyCache, k)
 			}
 			return m, m.loadCmd()
 		case "/":
@@ -1690,8 +1703,9 @@ func (m Model) renderDetail(w, h int) string {
 	}
 
 	// Body / config: render through glamour (markdown + syntax highlight),
-	// cached per (item path, format, width).
-	if c := selectDetailContent(it, m.detailFmt); c != "" {
+	// cached per (item path, format, width). Sessions lazy-load the full
+	// transcript on first access.
+	if c := m.detailContent(it); c != "" {
 		wrapped = append(wrapped, "")
 		wrapped = append(wrapped, m.renderMarkdown(it.Path, m.detailFmt, c, contentW)...)
 	}
@@ -1774,6 +1788,32 @@ func (m Model) renderMarkdown(path string, f detailFormat, content string, conte
 	}
 	m.glamourCache[key] = out
 	return out
+}
+
+// detailContent picks what to feed into the glamour pipeline for the
+// detail panel. Sessions get a lazily built full transcript (cached
+// by Item.Path); everything else falls through to selectDetailContent
+// which honours the json/toml format toggle for config-shaped items.
+func (m *Model) detailContent(it model.Item) string {
+	if it.Kind != model.KindSession {
+		return selectDetailContent(it, m.detailFmt)
+	}
+	if cached, ok := m.sessionBodyCache[it.Path]; ok {
+		return cached
+	}
+	var body string
+	switch it.Origin {
+	case model.OriginClaude:
+		body = parse.BuildClaudeTranscript(it.Path)
+	case model.OriginGemini:
+		body = parse.BuildGeminiTranscript(it.Path)
+	default:
+		// Codex (SQLite) lands in slice 3 — fall back to the preview
+		// stamped at adapter time so the panel still shows something.
+		body = it.Body
+	}
+	m.sessionBodyCache[it.Path] = body
+	return body
 }
 
 func selectDetailContent(it model.Item, f detailFormat) string {
