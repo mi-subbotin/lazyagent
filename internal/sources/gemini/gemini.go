@@ -70,7 +70,7 @@ func (s Source) List(_ context.Context, projectDir string) ([]model.Item, error)
 	if a := readGeminiMD(filepath.Join(geminiHome, "GEMINI.md"), model.ScopeGlobal); a != nil {
 		out = append(out, *a)
 	}
-	out = append(out, scanSessions(geminiHome)...)
+	out = append(out, scanSessions(geminiHome, projectDir)...)
 
 	// Project-local
 	if projectDir != "" {

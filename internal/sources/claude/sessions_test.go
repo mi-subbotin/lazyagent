@@ -49,7 +49,7 @@ func TestScanSessionsBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items := scanSessions(filepath.Join(home, ".claude"))
+	items := scanSessions(filepath.Join(home, ".claude"), "")
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -91,7 +91,7 @@ func TestScanSessionsSkipsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if items := scanSessions(filepath.Join(home, ".claude")); len(items) != 0 {
+	if items := scanSessions(filepath.Join(home, ".claude"), ""); len(items) != 0 {
 		t.Fatalf("expected empty result, got %d items", len(items))
 	}
 }
@@ -101,7 +101,59 @@ func TestScanSessionsSkipsEmpty(t *testing.T) {
 // an empty slice rather than erroring.
 func TestScanSessionsMissingProjectsDir(t *testing.T) {
 	home := t.TempDir()
-	if items := scanSessions(filepath.Join(home, ".claude")); len(items) != 0 {
+	if items := scanSessions(filepath.Join(home, ".claude"), ""); len(items) != 0 {
 		t.Fatalf("expected empty result, got %d items", len(items))
+	}
+}
+
+// TestScanSessionsClassifiesBuckets covers the local/global/private
+// split: a session in the current project goes Local, a session in a
+// real but different project goes Global, and a session under
+// /private/tmp goes Private.
+func TestScanSessionsClassifiesBuckets(t *testing.T) {
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "Projects", "myapp")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(encoded, cwd, sid string) {
+		dir := filepath.Join(home, ".claude", "projects", encoded)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"type":"user","cwd":"` + cwd + `","message":{"role":"user","content":"hi"},"sessionId":"` + sid + `"}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, sid+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("enc-local", projectDir, "11111111-1111-1111-1111-111111111111")
+	mk("enc-global", filepath.Join(home, "Projects", "other"), "22222222-2222-2222-2222-222222222222")
+	mk("enc-private", "/private/tmp/scratch", "33333333-3333-3333-3333-333333333333")
+
+	items := scanSessions(filepath.Join(home, ".claude"), projectDir)
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+
+	got := map[string]string{}
+	for _, it := range items {
+		bucket := "global"
+		if it.Private {
+			bucket = "private"
+		} else if it.Scope == model.ScopeLocal {
+			bucket = "local"
+		}
+		got[it.ConfigKey] = bucket
+	}
+	want := map[string]string{
+		"11111111-1111-1111-1111-111111111111": "local",
+		"22222222-2222-2222-2222-222222222222": "global",
+		"33333333-3333-3333-3333-333333333333": "private",
+	}
+	for sid, w := range want {
+		if got[sid] != w {
+			t.Errorf("session %s = %q, want %q", sid, got[sid], w)
+		}
 	}
 }

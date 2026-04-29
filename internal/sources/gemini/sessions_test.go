@@ -46,7 +46,7 @@ func TestScanSessionsBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items := scanSessions(filepath.Join(home, ".gemini"))
+	items := scanSessions(filepath.Join(home, ".gemini"), "")
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -70,6 +70,52 @@ func TestScanSessionsBasic(t *testing.T) {
 	}
 }
 
+// TestScanSessionsLocalAndPrivateBuckets verifies SHA-256(cwd) match
+// against the projectDir → Local, and SHA-256("/private/tmp") → Private.
+func TestScanSessionsLocalAndPrivateBuckets(t *testing.T) {
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "Projects", "myapp")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mk := func(hashCwd, sid string) {
+		hash := cwdHash(hashCwd)
+		chatsDir := filepath.Join(home, ".gemini", "tmp", hash, "chats")
+		if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"sessionId":"` + sid + `","projectHash":"` + hash + `","lastUpdated":"2026-01-15T10:00:00Z","messages":[{"id":"m1","timestamp":"2026-01-15T10:00:00Z","type":"user","content":"hi"}]}`
+		if err := os.WriteFile(filepath.Join(chatsDir, "session-"+sid+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(projectDir, "AAAA")
+	mk(filepath.Join(home, "Projects", "other"), "BBBB")
+	mk("/private/tmp", "CCCC")
+
+	items := scanSessions(filepath.Join(home, ".gemini"), projectDir)
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		bucket := "global"
+		if it.Private {
+			bucket = "private"
+		} else if it.Scope == model.ScopeLocal {
+			bucket = "local"
+		}
+		got[it.ConfigKey] = bucket
+	}
+	want := map[string]string{"AAAA": "local", "BBBB": "global", "CCCC": "private"}
+	for sid, w := range want {
+		if got[sid] != w {
+			t.Errorf("session %s = %q, want %q", sid, got[sid], w)
+		}
+	}
+}
+
 // TestScanSessionsMalformedSkipped — a non-JSON file in chats/ must
 // not crash the scanner; it's silently skipped like the rest of the
 // adapter.
@@ -82,7 +128,7 @@ func TestScanSessionsMalformedSkipped(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(chatsDir, "session-broken.json"), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if items := scanSessions(filepath.Join(home, ".gemini")); len(items) != 0 {
+	if items := scanSessions(filepath.Join(home, ".gemini"), ""); len(items) != 0 {
 		t.Fatalf("expected empty, got %d", len(items))
 	}
 }

@@ -1000,10 +1000,15 @@ func nextFormat(f detailFormat) detailFormat {
 
 // rebuildTree regenerates the visible flat tree from m.items + m.expanded.
 func (m *Model) rebuildTree() {
-	// Group items: Origin -> Kind -> Scope -> []Item
+	// Group items: Origin -> Kind -> Scope -> []Item.
+	// `private` is only populated for KindSession (sessions started in
+	// /tmp / tool config dirs / orchestrator worktrees go into a
+	// separate subgroup that's collapsed by default — see
+	// parse.IsPrivateSessionCwd).
 	type kindBucket struct {
-		global []int
-		local  []int
+		global  []int
+		local   []int
+		private []int
 	}
 	type originBucket struct {
 		kinds map[model.Kind]*kindBucket
@@ -1033,9 +1038,12 @@ func (m *Model) rebuildTree() {
 			continue
 		}
 		b := buckets[it.Origin].kinds[it.Kind]
-		if it.Scope == model.ScopeGlobal {
+		switch {
+		case it.Private:
+			b.private = append(b.private, i)
+		case it.Scope == model.ScopeGlobal:
 			b.global = append(b.global, i)
-		} else {
+		default:
 			b.local = append(b.local, i)
 		}
 	}
@@ -1068,7 +1076,7 @@ func (m *Model) rebuildTree() {
 		for _, k := range kindOrder {
 			kPath := oLabel + "/" + k.String()
 			b := buckets[o].kinds[k]
-			total := len(b.global) + len(b.local)
+			total := len(b.global) + len(b.local) + len(b.private)
 			// Hide empty kind groups when a filter is active so the tree
 			// stays scannable. Without a filter, show them at 0 so the
 			// user knows the kind exists.
@@ -1103,6 +1111,19 @@ func (m *Model) rebuildTree() {
 				if m.expanded[lPath] {
 					sortItems(b.local)
 					for _, idx := range b.local {
+						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+					}
+				}
+			}
+			// Private subgroup: orchestrator / tmp / tool-internal
+			// sessions. Collapsed by default so dozens of conductor
+			// worktrees don't bury the rest of the tree on first paint.
+			if len(b.private) > 0 {
+				pPath := kPath + "/Private"
+				tree = append(tree, node{depth: 2, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
+				if m.expanded[pPath] {
+					sortItems(b.private)
+					for _, idx := range b.private {
 						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
 					}
 				}

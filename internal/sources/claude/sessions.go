@@ -20,7 +20,7 @@ import (
 // hold the user/assistant turns; we sniff the leading turns just enough
 // to extract the project cwd and the first user prompt — enough for a
 // scannable list row without slurping multi-megabyte transcripts.
-func scanSessions(claudeHome string) []model.Item {
+func scanSessions(claudeHome, projectDir string) []model.Item {
 	projectsDir := filepath.Join(claudeHome, "projects")
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
@@ -41,7 +41,7 @@ func scanSessions(claudeHome string) []model.Item {
 				continue
 			}
 			full := filepath.Join(projectsDir, encoded, f.Name())
-			it, ok := readClaudeSession(full, encoded)
+			it, ok := readClaudeSession(full, encoded, projectDir)
 			if !ok {
 				continue
 			}
@@ -55,7 +55,7 @@ func scanSessions(claudeHome string) []model.Item {
 	return out
 }
 
-func readClaudeSession(path, encodedDir string) (model.Item, bool) {
+func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return model.Item{}, false
@@ -118,10 +118,17 @@ func readClaudeSession(path, encodedDir string) (model.Item, bool) {
 		preview = "(no user prompt)"
 	}
 
+	private := parse.IsPrivateSessionCwd(cwd)
+	scope := model.ScopeGlobal
+	if !private && parse.SessionIsLocal(cwd, projectDir) {
+		scope = model.ScopeLocal
+	}
+
 	return model.Item{
 		Origin:      model.OriginClaude,
 		Kind:        model.KindSession,
-		Scope:       model.ScopeGlobal,
+		Scope:       scope,
+		Private:     private,
 		Name:        preview,
 		Path:        path,
 		Description: fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(info.ModTime())),

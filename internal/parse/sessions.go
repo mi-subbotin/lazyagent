@@ -2,9 +2,83 @@ package parse
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// IsPrivateSessionCwd flags conversations the user almost never wants
+// to resume by hand. The classification is path-based and intentionally
+// conservative — false positives clutter the Global list a little, but
+// false negatives bury real projects under hundreds of orchestrator
+// runs. Buckets:
+//
+//   - System tmp: /tmp, /private/tmp, /var/tmp, /var/folders.
+//   - Tool internals: $HOME/.{claude,codex,gemini,lazyagent}.
+//     Sessions started while cd'd into a tool's own config tree are
+//     usually scratch / debugging.
+//   - Orchestrators: claude-squad worktrees and Conductor workspaces.
+//     These spawn one disposable cwd per task — dozens accumulate fast.
+//   - Empty cwd: the jsonl had no `cwd` field readable; without
+//     anchoring info we treat it as scratch rather than show it next
+//     to real projects.
+func IsPrivateSessionCwd(cwd string) bool {
+	if cwd == "" {
+		return true
+	}
+	clean := filepath.Clean(cwd)
+	for _, p := range []string{"/private/tmp", "/tmp", "/var/folders", "/var/tmp"} {
+		if hasPathPrefix(clean, p) {
+			return true
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		home = filepath.Clean(home)
+		for _, sub := range []string{".claude", ".codex", ".gemini", ".lazyagent"} {
+			if hasPathPrefix(clean, filepath.Join(home, sub)) {
+				return true
+			}
+		}
+	}
+	// Orchestrator markers — fragments anywhere in the path. Matched as
+	// substrings rather than prefixes because users can put their home
+	// directory or worktree root under arbitrary paths.
+	for _, marker := range []string{
+		"/.claude-squad/worktrees/",
+		"/conductor/workspaces/",
+	} {
+		if strings.Contains(clean, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// SessionIsLocal reports whether cwd belongs to the current project
+// — exact match or a subdirectory of projectDir. Returns false when
+// projectDir is empty, since a no-project run never has a "local"
+// scope to speak of.
+func SessionIsLocal(cwd, projectDir string) bool {
+	if cwd == "" || projectDir == "" {
+		return false
+	}
+	return hasPathPrefix(filepath.Clean(cwd), filepath.Clean(projectDir))
+}
+
+// hasPathPrefix is filepath.HasPrefix done right — splits on the path
+// separator so /a/bc never matches prefix /a/b. Local copy because
+// internal/store has the same helper but importing it here would
+// create a parse → store → parse loop.
+func hasPathPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if path == prefix {
+		return true
+	}
+	return strings.HasPrefix(path, prefix+string(filepath.Separator))
+}
 
 // SessionPreview shortens a multi-line first-user-message to a single
 // row suitable as a tree label. Returns the original (with newlines

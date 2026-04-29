@@ -1,6 +1,8 @@
 package gemini
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +15,37 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 )
+
+// cwdHash returns the per-project directory name Gemini CLI uses
+// under ~/.gemini/tmp/. Confirmed empirically — Gemini hashes the
+// absolute cwd via plain SHA-256 (no salt, no separator) and
+// hex-encodes the digest.
+func cwdHash(cwd string) string {
+	h := sha256.Sum256([]byte(cwd))
+	return hex.EncodeToString(h[:])
+}
+
+// privateCwdHashSet precomputes hashes for cwd values that always
+// land in the Private bucket. Gemini's transcript JSON doesn't
+// preserve cwd, only its hash, so we can't classify by path content
+// the way we do for Claude — we can only check exact-match against
+// well-known directories. Subdirs of these (e.g. /tmp/scratch) leak
+// into Global; that's acceptable since a precomputed prefix-match
+// over an unbounded subdir space isn't possible without listing the
+// whole filesystem.
+func privateCwdHashSet() map[string]struct{} {
+	roots := []string{"/tmp", "/private/tmp", "/var/tmp"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		for _, sub := range []string{".claude", ".codex", ".gemini", ".lazyagent"} {
+			roots = append(roots, filepath.Join(home, sub))
+		}
+	}
+	out := make(map[string]struct{}, len(roots))
+	for _, r := range roots {
+		out[cwdHash(r)] = struct{}{}
+	}
+	return out
+}
 
 // geminiSessionFile mirrors the on-disk JSON shape produced by the
 // Gemini CLI for ~/.gemini/tmp/<projectHash>/chats/session-*.json.
@@ -33,12 +66,17 @@ type geminiSessionFile struct {
 // per-project numeric index ("--resume 1" = newest in this project),
 // so adapter sorts within each projectHash and stamps Meta["index"]
 // before merging the per-project lists into one global stream.
-func scanSessions(geminiHome string) []model.Item {
+func scanSessions(geminiHome, projectDir string) []model.Item {
 	tmpDir := filepath.Join(geminiHome, "tmp")
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		return nil
 	}
+	localHash := ""
+	if projectDir != "" {
+		localHash = cwdHash(projectDir)
+	}
+	privateHashes := privateCwdHashSet()
 	var out []model.Item
 	for _, hashDir := range entries {
 		if !hashDir.IsDir() {
@@ -49,13 +87,15 @@ func scanSessions(geminiHome string) []model.Item {
 		if err != nil {
 			continue
 		}
+		isLocal := localHash != "" && hashDir.Name() == localHash
+		_, isPrivate := privateHashes[hashDir.Name()]
 		var perProject []model.Item
 		for _, f := range files {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
 				continue
 			}
 			full := filepath.Join(chatsDir, f.Name())
-			it, ok := readGeminiSession(full, hashDir.Name())
+			it, ok := readGeminiSession(full, hashDir.Name(), isLocal, isPrivate)
 			if !ok {
 				continue
 			}
@@ -76,7 +116,7 @@ func scanSessions(geminiHome string) []model.Item {
 	return out
 }
 
-func readGeminiSession(path, projectHash string) (model.Item, bool) {
+func readGeminiSession(path, projectHash string, isLocal, isPrivate bool) (model.Item, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return model.Item{}, false
@@ -122,10 +162,16 @@ func readGeminiSession(path, projectHash string) (model.Item, bool) {
 		preview = "(no user prompt)"
 	}
 
+	scope := model.ScopeGlobal
+	if !isPrivate && isLocal {
+		scope = model.ScopeLocal
+	}
+
 	return model.Item{
 		Origin:      model.OriginGemini,
 		Kind:        model.KindSession,
-		Scope:       model.ScopeGlobal,
+		Scope:       scope,
+		Private:     isPrivate,
 		Name:        preview,
 		Path:        path,
 		Description: fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(mod)),

@@ -180,4 +180,13 @@ type Item struct {
 	// in sync by construction. The TUI renders "(drift)" so users can
 	// resolve before edits accidentally compound the divergence.
 	Drift bool
+
+	// Private flags items the user almost never resumes manually:
+	// sessions started in /tmp, inside tool config dirs (~/.claude,
+	// ~/.codex, ~/.gemini, ~/.lazyagent), or under orchestrators that
+	// spawn one cwd per task (claude-squad worktrees, conductor
+	// workspaces). The tree renders these in a separate "Private"
+	// subgroup that's collapsed by default so they don't dominate the
+	// listing. Currently only KindSession sets this.
+	Private bool
 }
