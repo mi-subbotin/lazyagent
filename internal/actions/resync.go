@@ -107,10 +107,10 @@ func resyncCanonicalWins(it model.Item, canonical, canonicalBody string) error {
 			continue
 		}
 		// Healthy symlink to the canonical we own → nothing to do.
-		if info.Mode()&os.ModeSymlink != 0 {
-			if dest, err := os.Readlink(target); err == nil && (dest == source || dest == canonical) {
-				continue
-			}
+		// Compare via CanonicalItemDir so /var/X and /private/var/X
+		// (the macOS symlink pair) collapse to the same resolved form.
+		if info.Mode()&os.ModeSymlink != 0 && store.CanonicalItemDir(target) == canonical {
+			continue
 		}
 		if err := os.RemoveAll(target); err != nil {
 			return fmt.Errorf("clean drifted %s: %w", target, err)

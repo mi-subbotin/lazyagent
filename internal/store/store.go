@@ -22,12 +22,28 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/model"
 )
 
-// Root returns the on-disk root for the lazyagent shared store. The
-// directory is created lazily — Root never touches the filesystem.
-// Override the root by setting LAZYAGENT_STORE in the environment;
-// useful for tests and for users who want the store on a non-default
-// volume.
+// Root returns the on-disk root for the lazyagent shared store, with
+// any leading symlinks resolved (e.g. macOS /var → /private/var) so
+// every consumer agrees on a single canonical form — symlinks created
+// by Share, comparisons in CanonicalItemDir, and reads via Readlink
+// all match without ad-hoc canonicalisation at the call sites.
+//
+// Override via LAZYAGENT_STORE in the environment. When the directory
+// doesn't exist yet (first Init / fresh install), EvalSymlinks fails
+// and we fall back to filepath.Abs so callers can still mkdir against
+// the path; the next call resolves cleanly once Init has run.
 func Root() (string, error) {
+	raw, err := rawRoot()
+	if err != nil {
+		return "", err
+	}
+	if real, err := filepath.EvalSymlinks(raw); err == nil {
+		return filepath.Abs(real)
+	}
+	return filepath.Abs(raw)
+}
+
+func rawRoot() (string, error) {
 	if v := os.Getenv("LAZYAGENT_STORE"); v != "" {
 		return v, nil
 	}

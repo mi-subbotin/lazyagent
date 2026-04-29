@@ -259,10 +259,6 @@ func ResolvesToStore(path string) bool {
 	if err != nil {
 		return false
 	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return false
-	}
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return false
@@ -271,7 +267,7 @@ func ResolvesToStore(path string) bool {
 	if err != nil {
 		return false
 	}
-	return hasPathPrefix(abs, rootAbs)
+	return hasPathPrefix(abs, root)
 }
 
 // CanonicalItemDir maps a per-tool path that's a projection of a
@@ -287,11 +283,11 @@ func CanonicalItemDir(path string) string {
 	if err != nil {
 		return ""
 	}
-	root, err := Root()
+	rootReal, err := Root()
 	if err != nil {
 		return ""
 	}
-	rel, err := filepath.Rel(root, real)
+	rel, err := filepath.Rel(rootReal, real)
 	if err != nil {
 		return ""
 	}
@@ -300,7 +296,7 @@ func CanonicalItemDir(path string) string {
 		return ""
 	}
 	// parts = [kind, name, ...rest]
-	return filepath.Join(root, parts[0], parts[1])
+	return filepath.Join(rootReal, parts[0], parts[1])
 }
 
 // RemoveLink deletes target if and only if it points at (or is a copy

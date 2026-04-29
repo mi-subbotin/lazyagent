@@ -15,7 +15,7 @@ import (
 //   - Codex and Gemini paths are symlinks to the same canonical dir.
 func TestShareSkillProjectsAcrossTools(t *testing.T) {
 	home := t.TempDir()
-	store := t.TempDir()
+	store := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", store)
 
@@ -73,7 +73,7 @@ func TestShareSkillProjectsAcrossTools(t *testing.T) {
 
 func TestShareMemoryProjectsToTools(t *testing.T) {
 	home := t.TempDir()
-	store := t.TempDir()
+	store := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", store)
 
@@ -129,7 +129,7 @@ func TestShareMemoryProjectsToTools(t *testing.T) {
 // reflects the new set.
 func TestReshareDiffsAddAndRemove(t *testing.T) {
 	home := t.TempDir()
-	storeDir := t.TempDir()
+	storeDir := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", storeDir)
 
@@ -203,7 +203,7 @@ func TestShareLocalScopeRejected(t *testing.T) {
 // — replacing Claude's pre-existing copy with the canonical projection.
 func TestShareConflictAcrossTools(t *testing.T) {
 	home := t.TempDir()
-	storeDir := t.TempDir()
+	storeDir := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", storeDir)
 
@@ -278,7 +278,7 @@ func TestShareConflictAcrossTools(t *testing.T) {
 // overwrite refuses, with overwrite replaces Gemini's copy.
 func TestReshareConflictOnAddedTool(t *testing.T) {
 	home := t.TempDir()
-	storeDir := t.TempDir()
+	storeDir := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", storeDir)
 

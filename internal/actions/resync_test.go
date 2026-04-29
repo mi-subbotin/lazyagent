@@ -13,7 +13,7 @@ import (
 // must be replaced with canonical bytes.
 func TestResyncCanonicalWins(t *testing.T) {
 	home := t.TempDir()
-	storeDir := t.TempDir()
+	storeDir := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", storeDir)
 
@@ -70,7 +70,7 @@ func TestResyncCanonicalWins(t *testing.T) {
 // canonical store and reprojects to current peers.
 func TestResyncToolWins(t *testing.T) {
 	home := t.TempDir()
-	storeDir := t.TempDir()
+	storeDir := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_STORE", storeDir)
 
