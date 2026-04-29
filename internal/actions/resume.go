@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -50,18 +51,17 @@ func ResumeCommand(it model.Item, ctx ResumeContext) (*exec.Cmd, error) {
 }
 
 // ResumeNewTabCommand wraps the resume invocation in an osascript that
-// opens a fresh tab in the user's terminal (iTerm2 or Apple Terminal,
-// auto-detected via $TERM_PROGRAM) and runs the resume there. The TUI
-// keeps running in the original pane — handy for users who want to
-// keep the lazyagent tree open while the conversation resumes
-// elsewhere.
+// opens a fresh tab in the user's terminal (iTerm2, Warp, or Apple
+// Terminal, auto-detected via $TERM_PROGRAM) and runs the resume
+// there. The TUI keeps running in the original pane — handy for users
+// who want to keep the lazyagent tree open while the conversation
+// resumes elsewhere.
 func ResumeNewTabCommand(it model.Item, ctx ResumeContext) (*exec.Cmd, error) {
 	plan, err := planResume(it, ctx)
 	if err != nil {
 		return nil, err
 	}
-	shellLine := plan.shellLine()
-	script, err := newTabAppleScript(shellLine)
+	script, err := newTabAppleScript(plan)
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +159,23 @@ func shellQuote(s string) string {
 }
 
 // newTabAppleScript renders an AppleScript that opens a new tab in
-// the user's terminal and types the given shell line. We auto-detect
-// iTerm2 vs Apple Terminal via $TERM_PROGRAM; everything else falls
-// back to Terminal.app since macOS always has one. Returns an error
-// only on unrecoverable cases (none today, but kept for parity with
-// Linux/Windows variants we'll add later).
-func newTabAppleScript(shellLine string) (string, error) {
-	// AppleScript single-quotes badly; we escape double-quotes in the
-	// shell line for inclusion inside a "..." string literal.
-	escaped := strings.ReplaceAll(shellLine, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+// the user's terminal and runs the resume command there. Auto-detects
+// iTerm2, Warp, and Apple Terminal via $TERM_PROGRAM; anything we
+// don't recognise falls back to Terminal.app since macOS always has
+// one. Each backend takes a slightly different shape because their
+// scripting surfaces don't agree:
+//
+//   - iTerm2 has first-class AppleScript: "create tab" + "write text".
+//   - Warp has a URL scheme for the new tab + cwd, but no documented
+//     way to inject a command, so we keystroke it via System Events.
+//     macOS will prompt for Accessibility permission on first use.
+//   - Apple Terminal's `do script` accepts the full shell line (cd &&
+//     cmd), so we use it as-is.
+func newTabAppleScript(plan resumePlan) (string, error) {
+	bareCmd := plan.bareCmd()
+	shellLine := plan.shellLine()
+	osaShellLine := osaQuote(shellLine)
+	osaBareCmd := osaQuote(bareCmd)
 
 	switch os.Getenv("TERM_PROGRAM") {
 	case "iTerm.app":
@@ -180,15 +187,54 @@ func newTabAppleScript(shellLine string) (string, error) {
             write text "%s"
         end tell
     end tell
-end tell`, escaped), nil
+end tell`, osaShellLine), nil
+
+	case "WarpTerminal":
+		// Warp's URL scheme handles cwd; the command itself is typed
+		// via System Events because Warp doesn't expose a documented
+		// "open new tab AND run X" entry point. The 0.5s delay lets
+		// the new tab finish booting its shell before we inject keys —
+		// shorter values race the prompt and lose characters on
+		// slower machines.
+		urlPart := "warp://action/new_tab"
+		if plan.Dir != "" {
+			urlPart += "?path=" + url.QueryEscape(plan.Dir)
+		}
+		return fmt.Sprintf(`tell application "Warp" to activate
+do shell script "open %s"
+delay 0.5
+tell application "System Events"
+    keystroke "%s"
+    key code 36
+end tell`, osaQuote(urlPart), osaBareCmd), nil
+
 	default:
-		// Apple Terminal. `do script` opens a new window, but with
-		// `tell application "Terminal" to activate` it raises focus.
+		// Apple Terminal. `do script` opens a new window in the front
+		// app and runs the line in it; with `activate` it raises focus.
 		return fmt.Sprintf(`tell application "Terminal"
     activate
     do script "%s"
-end tell`, escaped), nil
+end tell`, osaShellLine), nil
 	}
+}
+
+// bareCmd returns just the resume invocation — no leading `cd`. Warp
+// sets the cwd via the URL scheme, so we type the command standalone.
+func (p resumePlan) bareCmd() string {
+	quoted := make([]string, len(p.Argv))
+	for i, a := range p.Argv {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// osaQuote escapes a string for embedding inside an AppleScript
+// double-quoted literal. AppleScript only treats `\` and `"` as
+// special inside a string, so escaping those two is sufficient.
+func osaQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
 }
 
 // BuildHashCwdIndex returns a sha256(cwd) → cwd map used by

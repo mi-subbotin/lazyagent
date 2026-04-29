@@ -213,6 +213,37 @@ func TestResumeNewTabCommandReturnsOsascript(t *testing.T) {
 	}
 }
 
+func TestResumeNewTabCommandWarp(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeLocal,
+		Meta:   map[string]string{"index": "1"},
+	}
+	cmd, err := ResumeNewTabCommand(it, ResumeContext{ProjectDir: "/Users/foo/proj space"})
+	if err != nil {
+		t.Fatalf("ResumeNewTabCommand: %v", err)
+	}
+	script := cmd.Args[2]
+	for _, want := range []string{
+		`tell application "Warp"`,
+		"warp://action/new_tab?path=",
+		"%2Fproj+space", // url-encoded segment
+		"keystroke",
+		"'gemini'",
+		"key code 36",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("Warp script missing %q:\n%s", want, script)
+		}
+	}
+	// Bare command path should NOT include `cd` (Warp sets cwd via the URL).
+	if strings.Contains(script, "cd ") {
+		t.Errorf("Warp script must not embed `cd` — relies on URL path:\n%s", script)
+	}
+}
+
 func TestResumeNewTabCommandTerminalAppDefault(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "")
 	it := model.Item{
