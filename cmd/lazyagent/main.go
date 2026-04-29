@@ -100,7 +100,34 @@ func runSharedSubcommand(args []string) error {
 // detectProject returns cwd if it contains any of the tool-specific markers,
 // otherwise empty string. Local-scope nodes are hidden when no project is
 // detected (per design decision).
+//
+// $HOME and "/" are never treated as project roots: $HOME naturally
+// contains ~/.claude, ~/.codex, ~/.gemini — those are global config
+// dirs, not project markers, and treating $HOME as a project would make
+// every adapter re-scan its global tree as "local", duplicating every
+// global item. Triggered by `brew install lazyagent` users who launch
+// from a fresh shell sitting in $HOME.
 func detectProject(cwd string) string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+	if abs == string(filepath.Separator) {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if homeAbs, err := filepath.Abs(home); err == nil && filepath.Clean(homeAbs) == abs {
+			return ""
+		}
+		// Cover the case where $HOME itself sits behind a symlink
+		// (e.g. /home/foo → /Users/foo on some setups).
+		if real, err := filepath.EvalSymlinks(home); err == nil {
+			if realAbs, err := filepath.Abs(real); err == nil && filepath.Clean(realAbs) == abs {
+				return ""
+			}
+		}
+	}
 	markers := []string{".claude", ".codex", ".gemini", ".agents", ".mcp.json", "AGENTS.md", "GEMINI.md", "CLAUDE.md"}
 	for _, mk := range markers {
 		if _, err := os.Stat(filepath.Join(cwd, mk)); err == nil {
