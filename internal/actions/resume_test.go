@@ -14,7 +14,7 @@ func TestResumeCommandClaude(t *testing.T) {
 		Kind:      model.KindSession,
 		ConfigKey: "abc-123",
 	}
-	cmd, err := ResumeCommand(it, "")
+	cmd, err := ResumeCommand(it, ResumeContext{})
 	if err != nil {
 		t.Fatalf("ResumeCommand: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestResumeCommandGeminiLocal(t *testing.T) {
 		Scope:  model.ScopeLocal,
 		Meta:   map[string]string{"index": "3"},
 	}
-	cmd, err := ResumeCommand(it, "/Users/foo/proj")
+	cmd, err := ResumeCommand(it, ResumeContext{ProjectDir: "/Users/foo/proj"})
 	if err != nil {
 		t.Fatalf("ResumeCommand: %v", err)
 	}
@@ -48,43 +48,132 @@ func TestResumeCommandGeminiLocal(t *testing.T) {
 	}
 }
 
-func TestResumeCommandGeminiNonLocalRejected(t *testing.T) {
-	cases := []struct {
-		name string
-		it   model.Item
-		dir  string
-	}{
-		{
-			name: "global scope",
-			it:   model.Item{Origin: model.OriginGemini, Kind: model.KindSession, Scope: model.ScopeGlobal, Meta: map[string]string{"index": "1"}},
-			dir:  "/some/proj",
-		},
-		{
-			name: "no project dir",
-			it:   model.Item{Origin: model.OriginGemini, Kind: model.KindSession, Scope: model.ScopeLocal, Meta: map[string]string{"index": "1"}},
-			dir:  "",
-		},
+// TestResumeCommandGeminiGlobalViaIndex covers the lookup path that
+// rescues Global Gemini sessions: when a session's projectHash is in
+// the Claude-derived hash→cwd map, ResumeCommand pins Cmd.Dir to
+// that recovered cwd instead of refusing.
+func TestResumeCommandGeminiGlobalViaIndex(t *testing.T) {
+	cwd := "/Users/foo/other-proj"
+	hash := sha256SumHex(cwd)
+
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeGlobal,
+		Meta:   map[string]string{"index": "1", "projectHash": hash},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, err := ResumeCommand(c.it, c.dir)
-			if !errors.Is(err, ErrResumeUnsupported) {
-				t.Errorf("expected ErrResumeUnsupported, got %v", err)
-			}
-		})
+	ctx := ResumeContext{
+		ProjectDir:   "/Users/foo/proj-current",
+		KnownHashCwd: map[string]string{hash: cwd},
+	}
+	cmd, err := ResumeCommand(it, ctx)
+	if err != nil {
+		t.Fatalf("ResumeCommand: %v", err)
+	}
+	if cmd.Dir != cwd {
+		t.Errorf("Cmd.Dir = %q, want %q", cmd.Dir, cwd)
+	}
+}
+
+func TestResumeCommandGeminiGlobalUnknownHash(t *testing.T) {
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeGlobal,
+		Meta:   map[string]string{"index": "1", "projectHash": "deadbeef"},
+	}
+	if _, err := ResumeCommand(it, ResumeContext{}); !errors.Is(err, ErrResumeUnsupported) {
+		t.Errorf("expected ErrResumeUnsupported, got %v", err)
+	}
+}
+
+func TestResumeCommandGeminiBadIndex(t *testing.T) {
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeLocal,
+		Meta:   map[string]string{"index": "abc"},
+	}
+	if _, err := ResumeCommand(it, ResumeContext{ProjectDir: "/x"}); !errors.Is(err, ErrResumeUnsupported) {
+		t.Errorf("non-numeric index must return ErrResumeUnsupported, got %v", err)
 	}
 }
 
 func TestResumeCommandCodexUnsupported(t *testing.T) {
 	it := model.Item{Origin: model.OriginCodex, Kind: model.KindSession}
-	if _, err := ResumeCommand(it, ""); !errors.Is(err, ErrResumeUnsupported) {
+	if _, err := ResumeCommand(it, ResumeContext{}); !errors.Is(err, ErrResumeUnsupported) {
 		t.Errorf("codex must return ErrResumeUnsupported, got %v", err)
 	}
 }
 
 func TestResumeCommandNotASession(t *testing.T) {
 	it := model.Item{Origin: model.OriginClaude, Kind: model.KindSkill}
-	if _, err := ResumeCommand(it, ""); !errors.Is(err, ErrResumeUnsupported) {
+	if _, err := ResumeCommand(it, ResumeContext{}); !errors.Is(err, ErrResumeUnsupported) {
 		t.Errorf("non-session must return ErrResumeUnsupported, got %v", err)
+	}
+}
+
+func TestBuildHashCwdIndex(t *testing.T) {
+	cwd1 := "/Users/foo/projA"
+	cwd2 := "/Users/foo/projB"
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": cwd1}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": cwd2}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": cwd1}}, // duplicate
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{}},           // missing cwd
+		{Origin: model.OriginGemini, Kind: model.KindSession, Meta: map[string]string{"projectHash": "x"}},
+		{Origin: model.OriginClaude, Kind: model.KindSkill, Meta: map[string]string{"cwd": "ignored"}},
+	}
+	got := BuildHashCwdIndex(items)
+	if len(got) != 2 {
+		t.Fatalf("want 2 unique hashes, got %d: %v", len(got), got)
+	}
+	if got[sha256SumHex(cwd1)] != cwd1 || got[sha256SumHex(cwd2)] != cwd2 {
+		t.Errorf("index missing entries: %v", got)
+	}
+}
+
+func TestResumeNewTabCommandReturnsOsascript(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindSession,
+		ConfigKey: "ses-1",
+	}
+	cmd, err := ResumeNewTabCommand(it, ResumeContext{})
+	if err != nil {
+		t.Fatalf("ResumeNewTabCommand: %v", err)
+	}
+	if !strings.HasSuffix(cmd.Path, "osascript") {
+		t.Errorf("expected osascript, got %q", cmd.Path)
+	}
+	if len(cmd.Args) < 3 || cmd.Args[1] != "-e" {
+		t.Fatalf("expected [osascript -e <script>], got %v", cmd.Args)
+	}
+	script := cmd.Args[2]
+	for _, want := range []string{"iTerm2", "create tab", "claude", "ses-1"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestResumeNewTabCommandTerminalAppDefault(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeLocal,
+		Meta:   map[string]string{"index": "1"},
+	}
+	cmd, err := ResumeNewTabCommand(it, ResumeContext{ProjectDir: "/Users/foo/proj"})
+	if err != nil {
+		t.Fatalf("ResumeNewTabCommand: %v", err)
+	}
+	script := cmd.Args[2]
+	for _, want := range []string{`tell application "Terminal"`, "do script", "cd '/Users/foo/proj'", "'gemini'", "'--resume'", "'1'"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q:\n%s", want, script)
+		}
 	}
 }

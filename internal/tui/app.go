@@ -472,7 +472,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// shared projections back to canonical. Same key, different
 			// semantics per Kind — both are "Restart" gestures.
 			if it.Kind == model.KindSession {
-				cmd, err := actions.ResumeCommand(it, m.projectDir)
+				ctx := actions.ResumeContext{
+					ProjectDir:   m.projectDir,
+					KnownHashCwd: actions.BuildHashCwdIndex(m.items),
+				}
+				cmd, err := actions.ResumeCommand(it, ctx)
 				if err != nil {
 					m.setToast(err.Error())
 					return m, nil
@@ -487,6 +491,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.resyncPicker = newResyncPicker(it)
+			return m, nil
+		case "T":
+			// Open resume in a new terminal tab (iTerm2 / Apple Terminal).
+			// Only meaningful on Sessions; we keep the TUI running in
+			// place. For non-sessions there's nothing useful here.
+			it, ok := m.currentItem()
+			if !ok {
+				return m, nil
+			}
+			if it.Kind != model.KindSession {
+				m.setToast("T only works on a Session")
+				return m, nil
+			}
+			ctx := actions.ResumeContext{
+				ProjectDir:   m.projectDir,
+				KnownHashCwd: actions.BuildHashCwdIndex(m.items),
+			}
+			cmd, err := actions.ResumeNewTabCommand(it, ctx)
+			if err != nil {
+				m.setToast(err.Error())
+				return m, nil
+			}
+			if err := cmd.Run(); err != nil {
+				m.setToast("new tab: " + err.Error())
+				return m, nil
+			}
+			m.setToast("resume opened in new tab")
 			return m, nil
 		case "e":
 			it, ok := m.currentItem()
@@ -1235,7 +1266,7 @@ func (m Model) defaultStatusLine() string {
 			ctx = append(ctx, "R resync")
 		}
 		if it.Kind == model.KindSession {
-			ctx = append(ctx, "R resume")
+			ctx = append(ctx, "R resume", "T new-tab")
 		}
 		return " " + strings.Join(append(ctx, tail...), " · ") + " "
 	}
@@ -1279,6 +1310,7 @@ func helpText() string {
 		"  x        cross-tool copy (pick target Origin / scope)\n" +
 		"  s        share to lazyagent store + project to selected tools\n" +
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
+		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  e        open in $EDITOR (external)\n" +
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
