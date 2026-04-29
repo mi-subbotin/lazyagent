@@ -69,6 +69,7 @@ func (s Source) List(_ context.Context, projectDir string) ([]model.Item, error)
 	if a := readAgentsMD(filepath.Join(codexHome, "AGENTS.md"), model.ScopeGlobal); a != nil {
 		out = append(out, *a)
 	}
+	out = append(out, scanSessions(codexHome, projectDir)...)
 
 	// Project-local
 	if projectDir != "" {

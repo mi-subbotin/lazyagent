@@ -34,8 +34,13 @@ var ErrTargetExists = errors.New("target already exists")
 // skills the entire `<root>/skills/<name>` directory is removed (including
 // auxiliary assets that live alongside SKILL.md). For config-entry items
 // (MCP servers, Codex profiles) the entry is removed from its config file
-// while leaving the surrounding configuration intact.
+// while leaving the surrounding configuration intact. Sessions are
+// kind-specific (jsonl/json file removal for Claude/Gemini, SQLite archive
+// for Codex) and routed through DeleteSession before the Storage switch.
 func Delete(it model.Item) error {
+	if it.Kind == model.KindSession {
+		return DeleteSession(it)
+	}
 	switch it.Storage {
 	case model.StorageFile:
 		return os.Remove(it.Path)

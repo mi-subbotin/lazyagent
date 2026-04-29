@@ -18,6 +18,7 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
+	"github.com/mi-subbotin/lazyagent/internal/state"
 	"github.com/mi-subbotin/lazyagent/internal/store"
 )
 
@@ -188,16 +189,24 @@ type Model struct {
 	// new turns on disk, so the cache will go stale until the user
 	// reloads; this is documented so the trade-off is explicit.
 	sessionBodyCache map[string]string
+
+	// hidePrivateSessions hides the Private subgroup under
+	// KindSession entirely when true (orchestrator / tmp / tool-internal
+	// sessions disappear from the tree). Toggled by H, persisted in
+	// ~/.lazyagent/state.json so the preference survives across runs.
+	hidePrivateSessions bool
 }
 
 func New(srcs []sources.Source, projectDir string) Model {
+	st, _ := state.Load()
 	return Model{
-		srcs:             srcs,
-		projectDir:       projectDir,
-		expanded:         defaultExpanded(),
-		loading:          true,
-		glamourCache:     map[string][]string{},
-		sessionBodyCache: map[string]string{},
+		srcs:                srcs,
+		projectDir:          projectDir,
+		expanded:            defaultExpanded(),
+		loading:             true,
+		glamourCache:        map[string][]string{},
+		sessionBodyCache:    map[string]string{},
+		hidePrivateSessions: st.HidePrivateSessions,
 	}
 }
 
@@ -491,6 +500,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.resyncPicker = newResyncPicker(it)
+			return m, nil
+		case "H":
+			// Toggle visibility of the Private subgroup under Sessions
+			// (orchestrator / tmp / tool-internal). Persists in
+			// ~/.lazyagent/state.json so the preference survives across
+			// runs. Tree rebuilds immediately so the user sees the
+			// effect without a manual reload.
+			m.hidePrivateSessions = !m.hidePrivateSessions
+			if err := state.Save(state.State{HidePrivateSessions: m.hidePrivateSessions}); err != nil {
+				m.setToast("save state: " + err.Error())
+			}
+			if m.hidePrivateSessions {
+				m.setToast("private sessions hidden")
+			} else {
+				m.setToast("private sessions visible")
+			}
+			m.rebuildTree()
 			return m, nil
 		case "T":
 			// Open resume in a new terminal tab (iTerm2 / Apple Terminal).
@@ -1159,7 +1185,11 @@ func (m *Model) rebuildTree() {
 		for _, k := range kindOrder {
 			kPath := oLabel + "/" + k.String()
 			b := buckets[o].kinds[k]
-			total := len(b.global) + len(b.local) + len(b.private)
+			privateVisible := !m.hidePrivateSessions || k != model.KindSession
+			total := len(b.global) + len(b.local)
+			if privateVisible {
+				total += len(b.private)
+			}
 			// Hide empty kind groups when a filter is active so the tree
 			// stays scannable. Without a filter, show them at 0 so the
 			// user knows the kind exists.
@@ -1201,7 +1231,9 @@ func (m *Model) rebuildTree() {
 			// Private subgroup: orchestrator / tmp / tool-internal
 			// sessions. Collapsed by default so dozens of conductor
 			// worktrees don't bury the rest of the tree on first paint.
-			if len(b.private) > 0 {
+			// `H` toggle suppresses the entire group when the user wants
+			// a clean view.
+			if privateVisible && len(b.private) > 0 {
 				pPath := kPath + "/Private"
 				tree = append(tree, node{depth: 2, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
 				if m.expanded[pPath] {
@@ -1311,6 +1343,7 @@ func helpText() string {
 		"  s        share to lazyagent store + project to selected tools\n" +
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
+		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  e        open in $EDITOR (external)\n" +
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
