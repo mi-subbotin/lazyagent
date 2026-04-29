@@ -18,6 +18,15 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/tui"
 )
 
+// version, commit and date are filled in at release time by goreleaser
+// via -ldflags. `dev` is the placeholder for `go run` / `go install`
+// builds where no metadata is wired up.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "shared" {
 		if err := runSharedSubcommand(os.Args[2:]); err != nil {
@@ -28,7 +37,13 @@ func main() {
 	}
 
 	useMock := flag.Bool("mock", false, "use the mock data source instead of real adapters")
+	showVersion := flag.Bool("version", false, "print version information and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("lazyagent %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {

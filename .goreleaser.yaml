@@ -1,0 +1,97 @@
+# goreleaser config for lazyagent.
+# Reference: https://goreleaser.com/customization/
+#
+# Local snapshot:   goreleaser release --snapshot --clean
+# Real release:     git tag v0.1.0 && git push origin v0.1.0
+#                   (the release.yml workflow runs goreleaser on the tag)
+version: 2
+
+project_name: lazyagent
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: lazyagent
+    main: ./cmd/lazyagent
+    binary: lazyagent
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+# Conventional Commits → release notes. The `feat!:` / `BREAKING CHANGE`
+# section pulls breaking-change commits into a dedicated header so users
+# notice them in the GitHub Releases page.
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: "Breaking changes"
+      regexp: '^.*?(feat|fix|chore)(\([[:word:]]+\))?!:.+$'
+      order: 0
+    - title: Features
+      regexp: "^.*?feat(\\([[:word:]]+\\))?:.+$"
+      order: 1
+    - title: Bug fixes
+      regexp: "^.*?fix(\\([[:word:]]+\\))?:.+$"
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore: bump"
+      - "Merge pull request"
+      - "Merge branch"
+
+# Personal Homebrew tap. The release.yml workflow injects a PAT with push
+# access to mi-subbotin/homebrew-tap via $HOMEBREW_TAP_GITHUB_TOKEN, and
+# goreleaser opens a commit there with the rendered formula.
+brews:
+  - name: lazyagent
+    repository:
+      owner: mi-subbotin
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/mi-subbotin/lazyagent
+    description: "Lazygit-style TUI for skills, subagents, MCP servers, prompts and memory across Claude Code, Codex and Gemini CLI."
+    license: Apache-2.0
+    # Sonoma is the floor — no point shipping for older macOS until someone asks.
+    dependencies: []
+    test: |
+      assert_match "lazyagent", shell_output("#{bin}/lazyagent --version")
+    install: |
+      bin.install "lazyagent"
+    caveats: |
+      First launch on macOS triggers Gatekeeper because the binary
+      isn't notarized. If that hits you:
+        xattr -d com.apple.quarantine "$(which lazyagent)"
+      Notarization is on the roadmap for a later release.
