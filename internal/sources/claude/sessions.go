@@ -1,0 +1,180 @@
+package claude
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
+)
+
+// scanSessions enumerates Claude session transcripts under
+// ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl. The first .jsonl
+// line carries metadata (sessionId, type, content) and subsequent lines
+// hold the user/assistant turns; we sniff the leading turns just enough
+// to extract the project cwd and the first user prompt — enough for a
+// scannable list row without slurping multi-megabyte transcripts.
+func scanSessions(claudeHome string) []model.Item {
+	projectsDir := filepath.Join(claudeHome, "projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil
+	}
+	var out []model.Item
+	for _, projDir := range entries {
+		if !projDir.IsDir() {
+			continue
+		}
+		encoded := projDir.Name()
+		files, err := os.ReadDir(filepath.Join(projectsDir, encoded))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			full := filepath.Join(projectsDir, encoded, f.Name())
+			it, ok := readClaudeSession(full, encoded)
+			if !ok {
+				continue
+			}
+			out = append(out, it)
+		}
+	}
+	// Newest first so the list reads top-down by recency.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Meta["lastUpdated"] > out[j].Meta["lastUpdated"]
+	})
+	return out
+}
+
+func readClaudeSession(path, encodedDir string) (model.Item, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return model.Item{}, false
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return model.Item{}, false
+	}
+	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+
+	var (
+		firstUserMsg string
+		cwd          string
+		seenLines    int
+	)
+	scanner := bufio.NewScanner(f)
+	// Tool outputs occasionally exceed the default 64K limit; raise it
+	// rather than silently dropping records.
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		// Stop once we have what we need or after a generous prefix —
+		// session files are append-only, the first user message and cwd
+		// always appear near the start.
+		if firstUserMsg != "" && cwd != "" {
+			break
+		}
+		if seenLines > 200 {
+			break
+		}
+		seenLines++
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec struct {
+			Type    string          `json:"type"`
+			Cwd     string          `json:"cwd"`
+			Message json.RawMessage `json:"message"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if cwd == "" && rec.Cwd != "" {
+			cwd = rec.Cwd
+		}
+		if firstUserMsg == "" && rec.Type == "user" && len(rec.Message) > 0 {
+			firstUserMsg = extractClaudeMessageText(rec.Message)
+		}
+	}
+
+	if firstUserMsg == "" && cwd == "" {
+		return model.Item{}, false
+	}
+
+	project := claudeProjectLabel(cwd, encodedDir)
+	preview := parse.SessionPreview(firstUserMsg, 80)
+	if preview == "" {
+		preview = "(no user prompt)"
+	}
+
+	return model.Item{
+		Origin:      model.OriginClaude,
+		Kind:        model.KindSession,
+		Scope:       model.ScopeGlobal,
+		Name:        preview,
+		Path:        path,
+		Description: fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(info.ModTime())),
+		Body:        parse.SessionBody(firstUserMsg, project, sessionID, info.ModTime()),
+		Storage:     model.StorageFile,
+		ConfigKey:   sessionID,
+		Meta: map[string]string{
+			"sessionId":   sessionID,
+			"cwd":         cwd,
+			"project":     project,
+			"lastUpdated": info.ModTime().UTC().Format(time.RFC3339),
+		},
+	}, true
+}
+
+// extractClaudeMessageText handles both shapes the Claude jsonl uses
+// for message.content: a bare string ("hello") or an array of blocks
+// ([{type:"text", text:"hello"}, ...]).
+func extractClaudeMessageText(raw json.RawMessage) string {
+	var msg struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return ""
+	}
+	if len(msg.Content) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(msg.Content, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(msg.Content, &blocks); err == nil {
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				return b.Text
+			}
+		}
+	}
+	return ""
+}
+
+// claudeProjectLabel picks a human-readable project name. The directory
+// name is a lossy encoding (every non-alphanumeric → "-"), so we prefer
+// the cwd recorded inside the jsonl when available and fall back to the
+// directory basename otherwise.
+func claudeProjectLabel(cwd, encoded string) string {
+	if cwd != "" {
+		return filepath.Base(cwd)
+	}
+	return encoded
+}

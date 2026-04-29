@@ -55,6 +55,15 @@ const (
 	// CLAUDE.md, AGENTS.md, GEMINI.md. Singular per scope — there is at
 	// most one global and one project-local file per origin.
 	KindMemory
+	// KindSession is a recorded conversation transcript on disk. Claude
+	// stores them as .jsonl under ~/.claude/projects/<encoded-cwd>/,
+	// Gemini as .json under ~/.gemini/tmp/<hash>/chats/, Codex inside
+	// state_5.sqlite. Sessions don't have global/local scope — they're
+	// always tied to a project (cwd) — but we keep the Scope field set
+	// to Global to match the rest of the model and group by project name
+	// using the existing tree machinery (project name lives in Item.Meta
+	// under "project").
+	KindSession
 )
 
 func (k Kind) String() string {
@@ -69,6 +78,8 @@ func (k Kind) String() string {
 		return "Prompts"
 	case KindMemory:
 		return "Memory"
+	case KindSession:
+		return "Sessions"
 	}
 	return "?"
 }
@@ -86,6 +97,8 @@ func ParseKind(s string) (Kind, bool) {
 		return KindPrompt, true
 	case "Memory":
 		return KindMemory, true
+	case "Sessions":
+		return KindSession, true
 	}
 	return 0, false
 }

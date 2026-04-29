@@ -58,6 +58,7 @@ func (s Source) List(_ context.Context, projectDir string) ([]model.Item, error)
 	if mem := readMemory(filepath.Join(globalRoot, "CLAUDE.md"), model.ScopeGlobal); mem != nil {
 		out = append(out, *mem)
 	}
+	out = append(out, scanSessions(globalRoot)...)
 
 	// Project-local (only if a project root was detected)
 	if projectDir != "" {

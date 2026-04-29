@@ -1019,7 +1019,7 @@ func (m *Model) rebuildTree() {
 			break
 		}
 	}
-	kindOrder := []model.Kind{model.KindSkill, model.KindAgent, model.KindMCP, model.KindPrompt, model.KindMemory}
+	kindOrder := []model.Kind{model.KindSkill, model.KindAgent, model.KindMCP, model.KindPrompt, model.KindMemory, model.KindSession}
 
 	for _, o := range originOrder {
 		buckets[o] = &originBucket{kinds: map[model.Kind]*kindBucket{}}
@@ -1040,7 +1040,19 @@ func (m *Model) rebuildTree() {
 		}
 	}
 
-	sortByName := func(idxs []int) {
+	// Sessions read top-down by recency, everything else alphabetically
+	// by name. The check on the bucket's first element is fine because a
+	// single bucket holds exactly one Kind.
+	sortItems := func(idxs []int) {
+		if len(idxs) == 0 {
+			return
+		}
+		if m.items[idxs[0]].Kind == model.KindSession {
+			sort.SliceStable(idxs, func(a, b int) bool {
+				return m.items[idxs[a]].Meta["lastUpdated"] > m.items[idxs[b]].Meta["lastUpdated"]
+			})
+			return
+		}
 		sort.SliceStable(idxs, func(a, b int) bool {
 			return m.items[idxs[a]].Name < m.items[idxs[b]].Name
 		})
@@ -1079,7 +1091,7 @@ func (m *Model) rebuildTree() {
 				gPath := kPath + "/Global"
 				tree = append(tree, node{depth: 2, label: gPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[gPath]})
 				if m.expanded[gPath] {
-					sortByName(b.global)
+					sortItems(b.global)
 					for _, idx := range b.global {
 						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
 					}
@@ -1089,7 +1101,7 @@ func (m *Model) rebuildTree() {
 				lPath := kPath + "/Local"
 				tree = append(tree, node{depth: 2, label: lPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[lPath]})
 				if m.expanded[lPath] {
-					sortByName(b.local)
+					sortItems(b.local)
 					for _, idx := range b.local {
 						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
 					}
