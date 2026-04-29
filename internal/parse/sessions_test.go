@@ -7,7 +7,11 @@ import (
 )
 
 func TestIsPrivateSessionCwd(t *testing.T) {
-	home := t.TempDir()
+	// Use a synthetic $HOME outside /var to avoid colliding with the
+	// /var/folders prefix used by t.TempDir() on macOS — those would
+	// be flagged as Private by design and the test wants to exercise
+	// the *non*-private branch as well.
+	home := "/Users/testfake"
 	t.Setenv("HOME", home)
 
 	cases := []struct {

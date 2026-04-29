@@ -109,13 +109,14 @@ func TestScanSessionsMissingProjectsDir(t *testing.T) {
 // TestScanSessionsClassifiesBuckets covers the local/global/private
 // split: a session in the current project goes Local, a session in a
 // real but different project goes Global, and a session under
-// /private/tmp goes Private.
+// /private/tmp goes Private. The cwd values written into the jsonl
+// don't have to be real paths on disk — the classifier is purely
+// path-based — so we use synthetic /Users/testfake/* strings to
+// dodge the /var/folders prefix that t.TempDir() lands in on macOS.
 func TestScanSessionsClassifiesBuckets(t *testing.T) {
 	home := t.TempDir()
-	projectDir := filepath.Join(home, "Projects", "myapp")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fakeProjectDir := "/Users/testfake/Projects/myapp"
+	otherFakeProject := "/Users/testfake/Projects/other"
 
 	mk := func(encoded, cwd, sid string) {
 		dir := filepath.Join(home, ".claude", "projects", encoded)
@@ -127,11 +128,11 @@ func TestScanSessionsClassifiesBuckets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mk("enc-local", projectDir, "11111111-1111-1111-1111-111111111111")
-	mk("enc-global", filepath.Join(home, "Projects", "other"), "22222222-2222-2222-2222-222222222222")
+	mk("enc-local", fakeProjectDir, "11111111-1111-1111-1111-111111111111")
+	mk("enc-global", otherFakeProject, "22222222-2222-2222-2222-222222222222")
 	mk("enc-private", "/private/tmp/scratch", "33333333-3333-3333-3333-333333333333")
 
-	items := scanSessions(filepath.Join(home, ".claude"), projectDir)
+	items := scanSessions(filepath.Join(home, ".claude"), fakeProjectDir)
 	if len(items) != 3 {
 		t.Fatalf("got %d items, want 3", len(items))
 	}

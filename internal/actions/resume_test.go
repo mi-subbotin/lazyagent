@@ -2,6 +2,7 @@ package actions
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ func TestResumeCommandClaude(t *testing.T) {
 		Origin:    model.OriginClaude,
 		Kind:      model.KindSession,
 		ConfigKey: "abc-123",
+		Meta:      map[string]string{"cwd": "/Users/foo/proj"},
 	}
 	cmd, err := ResumeCommand(it, ResumeContext{})
 	if err != nil {
@@ -24,8 +26,26 @@ func TestResumeCommandClaude(t *testing.T) {
 	if got := cmd.Args[1:]; len(got) != 2 || got[0] != "-r" || got[1] != "abc-123" {
 		t.Errorf("expected [-r abc-123], got %v", got)
 	}
+	if cmd.Dir != "/Users/foo/proj" {
+		t.Errorf("expected Cmd.Dir=cwd from Meta, got %q", cmd.Dir)
+	}
+}
+
+// TestResumeCommandClaudeNoCwdLeavesDirEmpty — zombie sessions with no
+// recorded cwd should still produce a runnable command (claude will
+// just look in the current shell cwd).
+func TestResumeCommandClaudeNoCwdLeavesDirEmpty(t *testing.T) {
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindSession,
+		ConfigKey: "abc-123",
+	}
+	cmd, err := ResumeCommand(it, ResumeContext{})
+	if err != nil {
+		t.Fatalf("ResumeCommand: %v", err)
+	}
 	if cmd.Dir != "" {
-		t.Errorf("claude should not pin Cmd.Dir, got %q", cmd.Dir)
+		t.Errorf("expected empty Cmd.Dir when Meta cwd missing, got %q", cmd.Dir)
 	}
 }
 
@@ -113,7 +133,7 @@ func TestResumeCommandNotASession(t *testing.T) {
 	}
 }
 
-func TestBuildHashCwdIndex(t *testing.T) {
+func TestBuildHashCwdIndexFromClaudeItems(t *testing.T) {
 	cwd1 := "/Users/foo/projA"
 	cwd2 := "/Users/foo/projB"
 	items := []model.Item{
@@ -124,12 +144,47 @@ func TestBuildHashCwdIndex(t *testing.T) {
 		{Origin: model.OriginGemini, Kind: model.KindSession, Meta: map[string]string{"projectHash": "x"}},
 		{Origin: model.OriginClaude, Kind: model.KindSkill, Meta: map[string]string{"cwd": "ignored"}},
 	}
-	got := BuildHashCwdIndex(items)
+	// home="" disables the walker so the test stays hermetic and does
+	// not pick up entries from the dev's real $HOME.
+	got := buildHashCwdIndex(items, "")
 	if len(got) != 2 {
 		t.Fatalf("want 2 unique hashes, got %d: %v", len(got), got)
 	}
 	if got[sha256SumHex(cwd1)] != cwd1 || got[sha256SumHex(cwd2)] != cwd2 {
 		t.Errorf("index missing entries: %v", got)
+	}
+}
+
+// TestBuildHashCwdIndexWalksHome plants a directory tree under a fake
+// $HOME and verifies the walker hashes the project subdir we care
+// about, while skipping noise dirs (.git, node_modules) and dirs
+// deeper than maxDepth.
+func TestBuildHashCwdIndexWalksHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	mustMkdir := func(rel string) string {
+		full := fakeHome + "/" + rel
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return full
+	}
+	want := mustMkdir("Projects/myapp")
+	noise := mustMkdir("Projects/myapp/node_modules/lodash")
+	hidden := mustMkdir("Projects/myapp/.git")
+	deep := mustMkdir("a/b/c/d/e/f") // beyond maxDepth=4 from fakeHome
+
+	got := buildHashCwdIndex(nil, fakeHome)
+	if got[sha256SumHex(want)] != want {
+		t.Errorf("expected %q in index", want)
+	}
+	if _, hit := got[sha256SumHex(noise)]; hit {
+		t.Errorf("node_modules path should be skipped: %v", noise)
+	}
+	if _, hit := got[sha256SumHex(hidden)]; hit {
+		t.Errorf(".git path should be skipped: %v", hidden)
+	}
+	if _, hit := got[sha256SumHex(deep)]; hit {
+		t.Errorf("path beyond maxDepth should not be indexed: %v", deep)
 	}
 }
 

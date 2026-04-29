@@ -98,9 +98,17 @@ func planResume(it model.Item, ctx ResumeContext) (resumePlan, error) {
 		if sid == "" {
 			return resumePlan{}, fmt.Errorf("%w: missing sessionId", ErrResumeUnsupported)
 		}
-		// `claude -r <id>` looks the session up by ID — works from any
-		// cwd, so we don't pin Dir.
-		return resumePlan{Argv: []string{"claude", "-r", sid}}, nil
+		// `claude -r <id>` is project-scoped: it looks under
+		// ~/.claude/projects/<encoded-cwd>/ and only finds the session
+		// when run from the matching cwd. Empirically reproducible —
+		// the help text doesn't say so but the binary refuses
+		// cross-project lookups. We pin Cmd.Dir to the recorded cwd.
+		// Empty Meta["cwd"] (zombie sessions) leaves Dir blank and
+		// claude will fall back to its current behaviour.
+		return resumePlan{
+			Argv: []string{"claude", "-r", sid},
+			Dir:  it.Meta["cwd"],
+		}, nil
 
 	case model.OriginGemini:
 		idx := it.Meta["index"]
@@ -183,11 +191,26 @@ end tell`, escaped), nil
 	}
 }
 
-// BuildHashCwdIndex scans items for Claude session metadata and
-// returns the sha256(cwd) → cwd map needed by ResumeContext to handle
-// non-Local Gemini resumes. Items without Meta["cwd"] are skipped.
-// Pure on the input; safe to call repeatedly.
+// BuildHashCwdIndex returns a sha256(cwd) → cwd map used by
+// ResumeContext to recover the original cwd of a Gemini session
+// (whose on-disk projectHash is one-way). The map is populated from
+// two sources, in order of confidence:
+//
+//  1. Claude jsonl transcripts that record cwd directly. Highest
+//     confidence — those are paths the user has already used Claude
+//     in.
+//  2. Best-effort walk of $HOME up to depth 4, skipping noise
+//     directories (node_modules, vendor, .git). Catches projects the
+//     user has touched only with Gemini, at the cost of a few ms of
+//     stat traffic at startup.
 func BuildHashCwdIndex(items []model.Item) map[string]string {
+	home, _ := os.UserHomeDir()
+	return buildHashCwdIndex(items, home)
+}
+
+// buildHashCwdIndex is the testable inner — pass home="" from tests to
+// keep them hermetic (no walk over the dev's actual $HOME).
+func buildHashCwdIndex(items []model.Item, home string) map[string]string {
 	out := map[string]string{}
 	for _, it := range items {
 		if it.Origin != model.OriginClaude || it.Kind != model.KindSession {
@@ -197,8 +220,70 @@ func BuildHashCwdIndex(items []model.Item) map[string]string {
 		if cwd == "" {
 			continue
 		}
-		h := sha256SumHex(cwd)
-		out[h] = cwd
+		out[sha256SumHex(cwd)] = cwd
+	}
+	if home != "" {
+		walkLikelyCwds(home, 4, func(path string) {
+			h := sha256SumHex(path)
+			if _, exists := out[h]; !exists {
+				out[h] = path
+			}
+		})
 	}
 	return out
+}
+
+// walkLikelyCwds visits root and every descendant directory up to
+// maxDepth, calling visit on each. Skips dirs that obviously aren't
+// project roots: hidden dirs (with a small allowlist for orchestrator
+// roots like .claude-squad) and well-known noise (node_modules, vendor,
+// .git, .cache). Depth is counted from root=0; a maxDepth of 4 covers
+// `~/conductor/workspaces/<proj>/<branch>` and the like.
+func walkLikelyCwds(root string, maxDepth int, visit func(string)) {
+	visit(root)
+	if maxDepth <= 0 {
+		return
+	}
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range ents {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if isNoiseDir(name) {
+				continue
+			}
+			if strings.HasPrefix(name, ".") && !isAllowedHiddenDir(name) {
+				continue
+			}
+			child := dir + string(os.PathSeparator) + name
+			visit(child)
+			if depth+1 < maxDepth {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+}
+
+func isNoiseDir(name string) bool {
+	switch name {
+	case "node_modules", "vendor", ".git", ".cache", ".terraform",
+		".venv", "venv", "__pycache__", "target", "build", "dist":
+		return true
+	}
+	return false
+}
+
+func isAllowedHiddenDir(name string) bool {
+	switch name {
+	case ".claude-squad", ".config", ".local":
+		return true
+	}
+	return false
 }
