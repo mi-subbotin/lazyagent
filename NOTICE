@@ -1,0 +1,19 @@
+lazyagent
+Copyright 2026 Mikhail Subbotin
+
+This product includes software developed by Mikhail Subbotin and the
+lazyagent contributors. Licensed under the Apache License, Version 2.0
+(the "License"); see the LICENSE file in this repository for the full
+text. You may also obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Third-party dependencies retain their respective licenses; refer to each
+module's source under the Go module cache or `go mod download` for the
+authoritative texts. Notable runtime dependencies include:
+
+  - github.com/charmbracelet/bubbletea  (MIT) — TUI runtime
+  - github.com/charmbracelet/bubbles    (MIT) — textarea / list widgets
+  - github.com/charmbracelet/lipgloss   (MIT) — styling
+  - github.com/charmbracelet/glamour    (MIT) — markdown rendering
+  - github.com/BurntSushi/toml          (MIT) — TOML round-trip

@@ -1,0 +1,14 @@
+/lazyagent
+*.test
+*.out
+.DS_Store
+
+# AI tooling: per-developer agent context files. Architecture docs that
+# should ship to contributors live in ARCHITECTURE.md instead.
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude/
+.codex/
+.gemini/
+.agents/
