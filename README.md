@@ -1,15 +1,49 @@
-# lazyagent
-
-> A lazygit-style TUI for managing skills, subagents, MCP servers, prompts and memory across **Claude Code**, **Codex** and **Gemini CLI** — one tree, one hotkey to share between tools.
+<!--
+PRI-7 will drop a 200x200 logo here. Until then we run with an emoji
+hero so the layout already matches the eventual design.
 
 <p align="center">
-  <img src="assets/tui-overview.png" alt="lazyagent — main view: tree of tools and kinds on the left, rendered SKILL.md detail on the right" width="900">
+  <img src="assets/logo.png" alt="lazyagent logo" width="200">
+</p>
+-->
+
+<h1 align="center">🦥 lazyagent</h1>
+
+<p align="center"><b>A lazygit-style TUI for skills, subagents, MCP servers, prompts and memory across Claude Code, Codex and Gemini CLI — one tree, one hotkey to share between tools.</b></p>
+
+<p align="center">
+  <a href="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/mi-subbotin/lazyagent?logo=go&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/mi-subbotin/lazyagent?color=blue"></a>
 </p>
 
-<!--
-animated demo (PRI-15): replace the static screenshot with an asciinema embed
-or assets/demo.gif once recorded.
--->
+<p align="center">
+  <a href="https://github.com/mi-subbotin/lazyagent/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/mi-subbotin/lazyagent?display_name=tag&sort=semver&color=brightgreen"></a>
+  <a href="https://github.com/mi-subbotin/homebrew-tap"><img alt="Homebrew tap" src="https://img.shields.io/badge/brew-mi--subbotin%2Ftap%2Flazyagent-orange?logo=homebrew&logoColor=white"></a>
+  <a href="#go-install"><img alt="go install" src="https://img.shields.io/badge/go_install-ready-00ADD8?logo=go&logoColor=white"></a>
+  <a href="https://github.com/mi-subbotin/lazyagent/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/mi-subbotin/lazyagent?logo=github&color=yellow"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/mi-subbotin/lazyagent/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/mi-subbotin/lazyagent?logo=github"></a>
+  <a href="https://github.com/mi-subbotin/lazyagent/discussions"><img alt="Discussions" src="https://img.shields.io/badge/Discussions-open-181717?logo=github"></a>
+</p>
+
+<p align="center">
+  <a href="#install"><img alt="Install" src="https://img.shields.io/badge/%F0%9F%9A%80_install-009688?style=for-the-badge"></a>&nbsp;
+  <a href="#quickstart"><img alt="Quickstart" src="https://img.shields.io/badge/%E2%9A%A1_quickstart-3949AB?style=for-the-badge"></a>
+</p>
+
+---
+
+## 📣 News
+
+- **2026-04-30** — `PRI-18` Broken frontmatter is now surfaced with an `(invalid)` badge instead of being silently skipped, with the diagnostic shown in the detail panel.
+- **2026-04-30** — `PRI-21` Shell completions for bash / zsh / fish; Homebrew installs them automatically, otherwise `lazyagent completion <shell>` prints the script.
+- **2026-04-30** — `PRI-17` Structured logging via `slog` + `lumberjack`. `lazyagent logs tail` is the new way to grab context for bug reports.
+- **2026-04-30** — `PRI-16` Optional `~/.lazyagent/config.toml` for tool toggles, search roots, logging level and more — managed via `lazyagent config {init,show,edit,validate}`.
+- **2026-04-29** — `PRI-5` Resume Claude / Codex / Gemini sessions straight from the tree with `R`.
+- **2026-04-29** — `PRI-2` Shared canonical store with symlink projection and drift detection (`s` / `R`).
 
 ---
 
@@ -33,6 +67,8 @@ brew install mi-subbotin/tap/lazyagent
 ```
 
 > First launch on macOS triggers Gatekeeper. Right-click the binary → **Open**, or `xattr -d com.apple.quarantine $(which lazyagent)`. Codesigning / notarization is on the roadmap but not yet shipped.
+
+<a id="go-install"></a>
 
 ### `go install`
 
@@ -86,6 +122,15 @@ Local-scope rows show only when `lazyagent` is launched from a directory that co
 ¹ Codex agents are stored as `[profiles.<name>]` entries in `config.toml`; cross-tool copy converts the body, lossy in either direction.<br>
 ² Gemini commands are TOML; cross-copy from Claude/Codex (markdown) requires a frontmatter → TOML rewrite.<br>
 ³ Codex agents and Gemini prompts can't be shared yet without format conversion — the share picker greys them out.
+
+<p align="center">
+  <img src="assets/tui-overview.png" alt="lazyagent — main view: tree of tools and kinds on the left, rendered SKILL.md detail on the right" width="900">
+</p>
+
+<!--
+PRI-15: replace this static shot with assets/demo.gif (or an asciinema
+embed) once a demo recording lands.
+-->
 
 ## Keys
 
