@@ -134,6 +134,53 @@ Pressing `s` on any per-tool item opens a multi-select picker (`[x] Claude  [x] 
   <img src="assets/detail-zoom.png" alt="Zoomed detail view of a shared skill — note the canonical path under ~/.lazyagent/store/ and the json/toml/back footer" width="900">
 </p>
 
+## Configuration
+
+Optional. `lazyagent` works out of the box with no config file at all — every option below has a baked-in default. When you want to override something, run `lazyagent config init` to seed `~/.lazyagent/config.toml`, then edit it (`lazyagent config edit` is a shortcut for `$EDITOR`).
+
+```toml
+[search]
+roots            = ["$HOME"]                        # PRI-4 global indexer roots
+ignore_paths     = []                               # PRI-10 .gitignore-style excludes
+follow_symlinks  = false
+
+[ui]
+theme            = "tokyonight"                     # tokyonight | catppuccin | nord
+default_mode     = "cwd"                            # cwd | global
+display_mode     = "origin"                         # origin | local-grouped
+default_origin   = "all"                            # all | claude | codex | gemini
+
+[tools]
+claude           = true
+codex            = true
+gemini           = true
+shared           = false
+
+[install]
+cache_dir        = "~/.lazyagent/cache"             # PRI-3 GitHub-install cache
+gc_after_days    = 30
+
+[updates]
+check_interval_days = 7                             # PRI-19 release check cadence
+notify              = true
+
+[logging]
+level            = "warn"                           # debug | info | warn | error
+file             = "~/.lazyagent/logs/lazyagent.log"
+format           = "text"                           # text | json
+```
+
+CLI helpers:
+
+| Command                       | What it does                                                  |
+| ----------------------------- | ------------------------------------------------------------- |
+| `lazyagent config init`       | Write the defaults above to `~/.lazyagent/config.toml`. Refuses if the file exists; pass `--force` to overwrite. |
+| `lazyagent config show`       | Print the effective config (defaults + your overrides) to stdout. |
+| `lazyagent config edit`       | Open the file in `$EDITOR` (creates it from defaults first if missing). |
+| `lazyagent config validate`   | Parse the file, list unknown keys and invalid enum values, exit non-zero on any. |
+
+Partial files are fine — only put the keys you want to override; everything else stays at the default. Unknown keys and invalid enum values become warnings on stderr and the offender resets to its default rather than aborting startup.
+
 ## Roadmap
 
 - [x] Read-only TUI MVP across Claude / Codex / Gemini

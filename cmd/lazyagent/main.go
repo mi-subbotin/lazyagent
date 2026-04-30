@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mi-subbotin/lazyagent/internal/config"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/sources/claude"
 	"github.com/mi-subbotin/lazyagent/internal/sources/codex"
@@ -35,6 +36,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		if err := runConfigSubcommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lazyagent:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	useMock := flag.Bool("mock", false, "use the mock data source instead of real adapters")
 	showVersion := flag.Bool("version", false, "print version information and exit")
@@ -44,6 +52,8 @@ func main() {
 		fmt.Printf("lazyagent %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
+
+	cfg := loadConfigOrWarn()
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -67,7 +77,19 @@ func main() {
 	if *useMock {
 		srcs = append(srcs, mock.Source{})
 	} else {
-		srcs = append(srcs, claude.Source{}, codex.Source{}, gemini.Source{}, lazyagent.Source{})
+		if cfg.Tools.Claude {
+			srcs = append(srcs, claude.Source{})
+		}
+		if cfg.Tools.Codex {
+			srcs = append(srcs, codex.Source{})
+		}
+		if cfg.Tools.Gemini {
+			srcs = append(srcs, gemini.Source{})
+		}
+		// The shared store source is always loaded — it returns no items
+		// when nothing has been shared yet, so it is safe to keep on. The
+		// `tools.shared` flag is reserved for the eventual opt-in projector.
+		srcs = append(srcs, lazyagent.Source{})
 	}
 
 	m := tui.New(srcs, projectDir)
@@ -76,6 +98,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, "lazyagent:", err)
 		os.Exit(1)
 	}
+}
+
+// loadConfigOrWarn reads ~/.lazyagent/config.toml and prints any non-fatal
+// warnings (parse error, unknown keys, invalid enum values) to stderr,
+// returning a usable Config either way. A real parse error falls back to
+// Default() so the TUI still boots.
+func loadConfigOrWarn() *config.Config {
+	path, err := config.DefaultPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lazyagent: cannot resolve config path:", err)
+		return config.Default()
+	}
+	cfg, report, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lazyagent: config load failed, using defaults:", err)
+		return config.Default()
+	}
+	for _, k := range report.UnknownKeys {
+		fmt.Fprintf(os.Stderr, "lazyagent: config: unknown key %s (ignored)\n", k)
+	}
+	for _, m := range report.ValidationErrors {
+		fmt.Fprintln(os.Stderr, "lazyagent: config:", m)
+	}
+	return cfg
 }
 
 // runSharedSubcommand dispatches `lazyagent shared <verb>`. Today only
