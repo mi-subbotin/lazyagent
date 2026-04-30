@@ -152,7 +152,7 @@ Pressing `s` on any per-tool item opens a multi-select picker (`[x] Claude  [x] 
 
 ## Contributing
 
-Bug reports and feature requests via [GitHub Issues](https://github.com/mi-subbotin/lazyagent/issues). PRs welcome — please open an issue first to discuss scope. Read [`VISION.md`](VISION.md) for what's in scope and what isn't, [`ARCHITECTURE.md`](ARCHITECTURE.md) for a codebase tour, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow.
+Bug reports and feature requests via [GitHub Issues](https://github.com/mi-subbotin/lazyagent/issues). PRs welcome — please open an issue first to discuss scope. Read [`VISION.md`](VISION.md) for what's in scope and what isn't, [`ARCHITECTURE.md`](ARCHITECTURE.md) for a codebase tour, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow. Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

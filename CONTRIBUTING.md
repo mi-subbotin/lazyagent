@@ -75,4 +75,4 @@ See [`SECURITY.md`](.github/SECURITY.md). Please use GitHub's private vulnerabil
 
 ## Code of conduct
 
-Participation in this project follows the spirit of the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/). A formal `CODE_OF_CONDUCT.md` will land alongside the rest of the OSS hygiene files (Linear PRI-14).
+Participation in this project is governed by the [Contributor Covenant](CODE_OF_CONDUCT.md). By contributing, you agree to abide by it.
