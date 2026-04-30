@@ -1,0 +1,80 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in the fields below — the more concrete the repro, the faster the fix.
+
+  - type: input
+    id: version
+    attributes:
+      label: lazyagent version
+      description: Output of `lazyagent --version` (or the commit hash if built from source).
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Windows
+        - Other (describe in details)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tools
+    attributes:
+      label: Which tool's data is involved?
+      multiple: true
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Shared store (~/.lazyagent/store)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Smallest sequence that triggers the bug. Include the command you ran and what you pressed.
+      placeholder: |
+        1. cd into a project with a .claude/ directory
+        2. Run `lazyagent`
+        3. Press `s` on a Claude skill
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include error output, stack traces or a screenshot if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Logs, screenshots, related issues — anything that helps.
+    validations:
+      required: false

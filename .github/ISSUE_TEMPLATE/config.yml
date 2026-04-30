@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/mi-subbotin/lazyagent/discussions
+    about: Ask questions, share configs, or discuss ideas. Issues are for bugs and feature requests only.
+  - name: Read VISION.md before requesting features
+    url: https://github.com/mi-subbotin/lazyagent/blob/main/VISION.md
+    about: lazyagent has an explicit scope — please skim VISION.md before opening a feature request.

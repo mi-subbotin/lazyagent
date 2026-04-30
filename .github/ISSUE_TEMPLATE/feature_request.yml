@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please skim [VISION.md](https://github.com/mi-subbotin/lazyagent/blob/main/VISION.md). It lists what `lazyagent` is and is not — requests outside that scope will likely be closed.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I read VISION.md and believe this fits within the project's scope.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the user-facing pain. Avoid jumping to a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like `lazyagent` to behave? Mock-ups, key bindings, sample sessions all welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try? What workarounds exist today?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: tools
+    attributes:
+      label: Which tool's workflow does this affect?
+      multiple: true
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Shared store
+        - All / not tool-specific
+    validations:
+      required: true

@@ -1,0 +1,31 @@
+name: Question
+description: Need help using lazyagent or unsure if a behaviour is intentional.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For open-ended discussion or "how do I…" questions, please use [Discussions](https://github.com/mi-subbotin/lazyagent/discussions) instead. Questions filed here that turn out to be bugs will be relabelled.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried so far?
+      description: Commands, key bindings, docs you've already read.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: lazyagent version
+      placeholder: v0.1.0
+    validations:
+      required: false
