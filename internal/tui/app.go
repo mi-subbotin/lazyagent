@@ -195,6 +195,12 @@ type Model struct {
 	// sessions disappear from the tree). Toggled by H, persisted in
 	// ~/.lazyagent/state.json so the preference survives across runs.
 	hidePrivateSessions bool
+
+	// installing drives the `i` GitHub-install wizard (PRI-3.D). All
+	// modal phases — URL input, fetch, candidate checklist, target
+	// chooser, conflict prompts and the final summary — share state
+	// in this struct.
+	installing *installOverlay
 }
 
 func New(srcs []sources.Source, projectDir string) Model {
@@ -344,6 +350,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, m.loadCmd()
 
+	case installFetchedMsg:
+		if m.installing == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.installing.err = msg.err.Error()
+			m.installing.summary = nil
+			m.installing.phase = phaseInstallDone
+			return m, nil
+		}
+		m.installing.spec = msg.spec
+		m.installing.sha = msg.sha
+		m.installing.cacheDir = msg.cacheDir
+		m.installing.candidates = msg.candidates
+		m.installing.selected = make([]bool, len(msg.candidates))
+		// Default-select everything to match the typical "install all"
+		// case; users can `space` off the ones they don't want.
+		for i := range m.installing.selected {
+			m.installing.selected[i] = true
+		}
+		m.installing.cursor = 0
+		m.installing.phase = phaseInstallPick
+		return m, nil
+
+	case installAppliedMsg:
+		if m.installing == nil {
+			return m, nil
+		}
+		m.installing.summary = msg.summary
+		if msg.err != nil {
+			m.installing.err = msg.err.Error()
+		}
+		m.installing.phase = phaseInstallDone
+		return m, nil
+
 	case resumeDoneMsg:
 		// Upstream CLI exited. The session's transcript and lastUpdated
 		// almost certainly changed; nuke both caches and reload.
@@ -385,6 +426,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resync picker: c/t/esc.
 		if m.resyncPicker != nil {
 			return m.updateResyncPicker(msg)
+		}
+
+		// Install-from-GitHub wizard: full-screen modal across several
+		// phases (URL input → fetch → pick → target → conflicts → done).
+		if m.installing != nil {
+			next, cmd := m.updateInstall(msg)
+			return next, cmd
 		}
 
 		// Create-new overlay: typed-text input, esc cancels, enter creates.
@@ -567,6 +615,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.creating = ov
 			return m, nil
+		case "i":
+			m.installing = newInstallOverlay()
+			return m, nil
+		case "U":
+			it, ok := m.currentItem()
+			if !ok {
+				return m, nil
+			}
+			cmd, err := startUpdateForItem(it)
+			if err != nil {
+				m.setToast("update: " + err.Error())
+				return m, nil
+			}
+			m.installing = newUpdateOverlay(it)
+			return m, cmd
 		case "E":
 			it, ok := m.currentItem()
 			if !ok {
@@ -1347,6 +1410,8 @@ func helpText() string {
 		"  e        open in $EDITOR (external)\n" +
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
+		"  i        install from a github.com / gist URL\n" +
+		"  U        update an installed item to the origin's latest sha\n" +
 		"  r        reload all sources\n" +
 		"  ?        toggle this help\n" +
 		"  q        quit\n" +
@@ -1549,6 +1614,9 @@ func (m Model) View() string {
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	} else if m.creating != nil {
 		body = overlay(body, createOverlayText(*m.creating),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.installing != nil {
+		body = overlay(body, installOverlayText(m.installing),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string

@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mi-subbotin/lazyagent/internal/config"
+	"github.com/mi-subbotin/lazyagent/internal/install"
 	"github.com/mi-subbotin/lazyagent/internal/logging"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/sources/claude"
@@ -138,6 +140,21 @@ func main() {
 	if err := store.Init(); err != nil {
 		fmt.Fprintln(os.Stderr, "lazyagent: cannot init shared store:", err)
 		os.Exit(1)
+	}
+
+	// PRI-3.E: best-effort sweep of orphan tarballs on startup. Bounded
+	// to once per 30 days via a `.last-gc` marker inside the cache, so
+	// it never adds noticeable latency to subsequent launches. Errors
+	// are logged but never block boot — `cache gc` from the CLI is the
+	// authoritative manual override.
+	if cacheDir, err := defaultCacheDir(); err == nil {
+		if manifestPath, err := install.DefaultPath(); err == nil {
+			if removed, err := install.AutoGC(cacheDir, manifestPath, 30*24*time.Hour); err != nil {
+				slog.Warn("install: auto-gc failed", "err", err)
+			} else if removed > 0 {
+				slog.Info("install: auto-gc swept stale tarballs", "removed", removed)
+			}
+		}
 	}
 
 	var srcs []sources.Source

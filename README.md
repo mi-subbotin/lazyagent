@@ -38,6 +38,7 @@ hero so the layout already matches the eventual design.
 
 ## 📣 News
 
+- **2026-04-30** — `PRI-3` Install skills / agents / prompts from any public GitHub repo: `i` in the TUI or `lazyagent install <url>` from the shell. `U` updates an installed item to the origin's latest sha.
 - **2026-04-30** — `PRI-18` Broken frontmatter is now surfaced with an `(invalid)` badge instead of being silently skipped, with the diagnostic shown in the detail panel.
 - **2026-04-30** — `PRI-21` Shell completions for bash / zsh / fish; Homebrew installs them automatically, otherwise `lazyagent completion <shell>` prints the script.
 - **2026-04-30** — `PRI-17` Structured logging via `slog` + `lumberjack`. `lazyagent logs tail` is the new way to grab context for bug reports.
@@ -225,6 +226,40 @@ CLI helpers:
 | `lazyagent config validate`   | Parse the file, list unknown keys and invalid enum values, exit non-zero on any. |
 
 Partial files are fine — only put the keys you want to override; everything else stays at the default. Unknown keys and invalid enum values become warnings on stderr and the offender resets to its default rather than aborting startup.
+
+## Install items from GitHub
+
+Pull skills, agents and prompts straight from a public repo — either via the TUI (`i`) or the shell.
+
+```bash
+# show what's installable in a repo
+lazyagent install github.com/anthropics/skills --list
+
+# install everything into Claude (global)
+lazyagent install github.com/anthropics/skills --all
+
+# install one item by name into Codex (global)
+lazyagent install github.com/foo/bar --target=codex --name=cool-skill
+
+# refresh an installed item to the origin's latest sha
+# (TUI: cursor on the item, then U)
+# CLI: re-run install with --overwrite
+
+# remove an installed item; --target/--scope to disambiguate when needed
+lazyagent uninstall cool-skill --target=codex
+
+# sweep abandoned tarball cache (auto-runs every 30 days at startup)
+lazyagent cache gc
+```
+
+Supported URL shapes:
+
+- `github.com/<owner>/<repo>` — install at the default branch
+- `github.com/<owner>/<repo>/tree/<ref>[/path]` — pin a tag/sha or narrow to one subdir
+- `github.com/<owner>/<repo>/blob/<ref>/path/file.md` — single file
+- `gist.github.com/<id>` *(coming soon — currently rejected)*
+
+The detection is convention-based: `skills/<name>/SKILL.md` → Skill, `agents/<name>.md` → Agent, `commands/<name>.md` → Prompt. Set `GH_TOKEN` (or `GITHUB_TOKEN`) for private repos. Pinned shas land in `~/.lazyagent/installed.toml`; tarballs cache under `~/.lazyagent/cache/` and are swept automatically.
 
 ## Shell completions
 
