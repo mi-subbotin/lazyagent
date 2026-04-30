@@ -181,6 +181,30 @@ CLI helpers:
 
 Partial files are fine — only put the keys you want to override; everything else stays at the default. Unknown keys and invalid enum values become warnings on stderr and the offender resets to its default rather than aborting startup.
 
+## Shell completions
+
+`lazyagent completion <bash|zsh|fish>` prints the completion script for the chosen shell to stdout.
+
+Homebrew installs all three automatically — restart your shell after `brew install` and tab-completion just works.
+
+For non-brew installs:
+
+```bash
+# bash (one-shot, current shell)
+source <(lazyagent completion bash)
+
+# bash (persistent, system-wide on macOS)
+lazyagent completion bash | sudo tee /opt/homebrew/etc/bash_completion.d/lazyagent > /dev/null
+
+# zsh (persistent — pick any directory in $fpath)
+lazyagent completion zsh > "${fpath[1]}/_lazyagent"
+
+# fish
+lazyagent completion fish > ~/.config/fish/completions/lazyagent.fish
+```
+
+Completions cover all subcommands (`config / logs / shared / completion`) and the global flags (`--mock`, `--verbose`/`-v`, `--log-file`, `--log-format`).
+
 ## Troubleshooting
 
 `lazyagent` writes a structured log to `~/.lazyagent/logs/lazyagent.log` (rotated daily, kept for a week). Adapter parse failures, edit/copy/share/delete actions and startup metadata land there — nothing ever goes to stdout/stderr while the TUI is running, so the altscreen stays clean.

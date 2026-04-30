@@ -11,6 +11,10 @@ project_name: lazyagent
 before:
   hooks:
     - go mod tidy
+    # Generate shell completion scripts so the brew formula and the
+    # release archive can ship them. We render via `go run` so the
+    # source of truth stays internal/completion/*.sh — no copy / paste.
+    - sh -c 'mkdir -p completions && for sh in bash zsh fish; do go run ./cmd/lazyagent completion $sh > completions/lazyagent.$sh; done'
 
 builds:
   - id: lazyagent
@@ -37,6 +41,7 @@ archives:
       - LICENSE
       - NOTICE
       - README.md
+      - completions/*
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
@@ -90,6 +95,9 @@ brews:
       assert_match "lazyagent", shell_output("#{bin}/lazyagent --version")
     install: |
       bin.install "lazyagent"
+      bash_completion.install "completions/lazyagent.bash" => "lazyagent"
+      zsh_completion.install "completions/lazyagent.zsh" => "_lazyagent"
+      fish_completion.install "completions/lazyagent.fish" => "lazyagent.fish"
     caveats: |
       First launch on macOS triggers Gatekeeper because the binary
       isn't notarized. If that hits you:
