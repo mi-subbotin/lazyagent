@@ -114,17 +114,23 @@ func scanAgents(dir string, scope model.Scope) []model.Item {
 		if name == "" {
 			name = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 		}
+		parseErr, warnings := parse.DiagnoseFrontmatter(fm, []string{"name", "description"})
+		if parseErr != "" {
+			slog.Warn("gemini: agent frontmatter has errors", "path", path, "errors", parseErr)
+		}
 		out = append(out, model.Item{
-			Origin:      model.OriginGemini,
-			Kind:        model.KindAgent,
-			Scope:       scope,
-			Name:        name,
-			Path:        path,
-			Description: fm.Fields["description"],
-			Body:        fm.Body,
-			Meta:        fm.Fields,
-			Storage:     model.StorageFile,
-			Shared:      store.ResolvesToStore(path),
+			Origin:             model.OriginGemini,
+			Kind:               model.KindAgent,
+			Scope:              scope,
+			Name:               name,
+			Path:               path,
+			Description:        fm.Fields["description"],
+			Body:               fm.Body,
+			Meta:               fm.Fields,
+			Storage:            model.StorageFile,
+			Shared:             store.ResolvesToStore(path),
+			ParseError:         parseErr,
+			ValidationWarnings: warnings,
 		})
 	}
 	return out
@@ -152,17 +158,23 @@ func scanSkills(dir string, scope model.Scope) []model.Item {
 		if name == "" {
 			name = e.Name()
 		}
+		parseErr, warnings := parse.DiagnoseFrontmatter(fm, []string{"name", "description"})
+		if parseErr != "" {
+			slog.Warn("gemini: skill frontmatter has errors", "path", path, "errors", parseErr)
+		}
 		out = append(out, model.Item{
-			Origin:      model.OriginGemini,
-			Kind:        model.KindSkill,
-			Scope:       scope,
-			Name:        name,
-			Path:        path,
-			Description: fm.Fields["description"],
-			Body:        fm.Body,
-			Meta:        fm.Fields,
-			Storage:     model.StorageDir,
-			Shared:      store.ResolvesToStore(filepath.Join(dir, e.Name())),
+			Origin:             model.OriginGemini,
+			Kind:               model.KindSkill,
+			Scope:              scope,
+			Name:               name,
+			Path:               path,
+			Description:        fm.Fields["description"],
+			Body:               fm.Body,
+			Meta:               fm.Fields,
+			Storage:            model.StorageDir,
+			Shared:             store.ResolvesToStore(filepath.Join(dir, e.Name())),
+			ParseError:         parseErr,
+			ValidationWarnings: warnings,
 		})
 	}
 	return out

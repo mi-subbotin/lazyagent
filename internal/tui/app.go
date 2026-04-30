@@ -1658,6 +1658,8 @@ func (m Model) renderTree(w, h int) string {
 		} else {
 			label := n.label
 			drifted := false
+			invalid := false
+			warning := false
 			// (s) badge for items that resolve into the lazyagent shared
 			// store. Cheap signal that the bytes are canonical and the
 			// item shows up under multiple Origins simultaneously. Skip
@@ -1672,12 +1674,29 @@ func (m Model) renderTree(w, h int) string {
 					label += " (drift)"
 					drifted = true
 				}
+				// PRI-18: surface frontmatter problems in the tree so a
+				// user with a malformed file knows where to look. Errors
+				// take precedence over warnings (`(invalid)` swallows the
+				// `(?)`).
+				switch {
+				case it.ParseError != "":
+					label += " (invalid)"
+					invalid = true
+				case len(it.ValidationWarnings) > 0:
+					label += " (?)"
+					warning = true
+				}
 			}
 			raw = indent + "  " + label
 			raw = truncRunes(raw, contentW)
 			styled = raw
-			if drifted {
+			switch {
+			case invalid:
+				styled = invalidStyle.Render(raw)
+			case drifted:
 				styled = driftStyle.Render(raw)
+			case warning:
+				styled = warnStyle.Render(raw)
 			}
 		}
 		if i == m.cursor && m.focus == focusTree {
@@ -1802,6 +1821,26 @@ func (m Model) renderDetail(w, h int) string {
 	wrapped = append(wrapped, dimStyle.Render(truncRunes(
 		fmt.Sprintf("%s · %s · %s", it.Origin, it.Kind, it.Scope), contentW)))
 	wrapped = append(wrapped, dimStyle.Render(truncRunes("path: "+it.Path, contentW)))
+
+	// Validation banner (PRI-18). A red block for parse errors, a yellow
+	// strip for soft warnings — both go above the description so the user
+	// sees them before the content even when scrolled to the top.
+	if it.ParseError != "" {
+		wrapped = append(wrapped, "")
+		wrapped = append(wrapped, invalidStyle.Render(truncRunes("⚠ invalid frontmatter — item still listed but won't be picked up correctly by the tool", contentW)))
+		for _, line := range wrapLines([]string{it.ParseError}, contentW) {
+			wrapped = append(wrapped, invalidStyle.Render(line))
+		}
+	}
+	if len(it.ValidationWarnings) > 0 {
+		wrapped = append(wrapped, "")
+		wrapped = append(wrapped, warnStyle.Render(truncRunes("validation warnings:", contentW)))
+		for _, w := range it.ValidationWarnings {
+			for _, line := range wrapLines([]string{"  • " + w}, contentW) {
+				wrapped = append(wrapped, warnStyle.Render(line))
+			}
+		}
+	}
 
 	// Description: short, plain-wrap.
 	if it.Description != "" {

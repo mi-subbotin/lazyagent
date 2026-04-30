@@ -34,4 +34,16 @@ var (
 	// selection background highlight intact when the row is focused.
 	driftStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#e0af68"))
+
+	// invalidStyle paints rows with frontmatter parse errors in a red
+	// that's still readable on the dark background; selection highlight
+	// is preserved by overriding only foreground.
+	invalidStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#f7768e"))
+
+	// warnStyle paints rows that parsed cleanly but are missing
+	// recommended fields. Distinct from invalid (red) so the user knows
+	// the item still works — just isn't quite right.
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#e0af68"))
 )

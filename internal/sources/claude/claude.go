@@ -138,17 +138,23 @@ func scanSkills(root string, scope model.Scope) []model.Item {
 		if name == "" {
 			name = e.Name()
 		}
+		parseErr, warnings := parse.DiagnoseFrontmatter(fm, []string{"name", "description"})
+		if parseErr != "" {
+			slog.Warn("claude: skill frontmatter has errors", "path", path, "errors", parseErr)
+		}
 		out = append(out, model.Item{
-			Origin:      model.OriginClaude,
-			Kind:        model.KindSkill,
-			Scope:       scope,
-			Name:        name,
-			Path:        path,
-			Description: fm.Fields["description"],
-			Body:        fm.Body,
-			Meta:        fm.Fields,
-			Storage:     model.StorageDir,
-			Shared:      store.ResolvesToStore(filepath.Join(dir, e.Name())),
+			Origin:             model.OriginClaude,
+			Kind:               model.KindSkill,
+			Scope:              scope,
+			Name:               name,
+			Path:               path,
+			Description:        fm.Fields["description"],
+			Body:               fm.Body,
+			Meta:               fm.Fields,
+			Storage:            model.StorageDir,
+			Shared:             store.ResolvesToStore(filepath.Join(dir, e.Name())),
+			ParseError:         parseErr,
+			ValidationWarnings: warnings,
 		})
 	}
 	return out
@@ -204,12 +210,14 @@ func scanFlatMarkdown(dir string, scope model.Scope, kind model.Kind) []model.It
 func parseMarkdownItem(path string, scope model.Scope, kind model.Kind, baseDir string) model.Item {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		slog.Warn("claude: read markdown item", "path", path, "err", err)
 		return model.Item{
-			Origin: model.OriginClaude,
-			Kind:   kind,
-			Scope:  scope,
-			Name:   strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
-			Path:   path,
+			Origin:     model.OriginClaude,
+			Kind:       kind,
+			Scope:      scope,
+			Name:       strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+			Path:       path,
+			ParseError: err.Error(),
 		}
 	}
 	fm := parse.Parse(string(data))
@@ -224,17 +232,23 @@ func parseMarkdownItem(path string, scope model.Scope, kind model.Kind, baseDir 
 			name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		}
 	}
+	parseErr, warnings := parse.DiagnoseFrontmatter(fm, []string{"name", "description"})
+	if parseErr != "" {
+		slog.Warn("claude: markdown frontmatter has errors", "path", path, "errors", parseErr)
+	}
 	return model.Item{
-		Origin:      model.OriginClaude,
-		Kind:        kind,
-		Scope:       scope,
-		Name:        name,
-		Path:        path,
-		Description: fm.Fields["description"],
-		Body:        fm.Body,
-		Meta:        fm.Fields,
-		Storage:     model.StorageFile,
-		Shared:      store.ResolvesToStore(path),
+		Origin:             model.OriginClaude,
+		Kind:               kind,
+		Scope:              scope,
+		Name:               name,
+		Path:               path,
+		Description:        fm.Fields["description"],
+		Body:               fm.Body,
+		Meta:               fm.Fields,
+		Storage:            model.StorageFile,
+		Shared:             store.ResolvesToStore(path),
+		ParseError:         parseErr,
+		ValidationWarnings: warnings,
 	}
 }
 

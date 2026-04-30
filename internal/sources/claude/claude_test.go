@@ -81,3 +81,76 @@ func TestScanSkillsFollowsSymlinks(t *testing.T) {
 		t.Fatal("plain skill missing from List() output")
 	}
 }
+
+// TestScanSkills_ReportsBrokenFrontmatter verifies PRI-18 behaviour:
+// a SKILL.md with malformed frontmatter is still surfaced as an Item
+// rather than being silently skipped, and Item.ParseError carries the
+// diagnostic so the TUI can render an "(invalid)" badge.
+func TestScanSkills_ReportsBrokenFrontmatter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_STORE", t.TempDir())
+
+	skillDir := filepath.Join(home, ".claude", "skills", "broken")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Frontmatter never closes — should produce an "unterminated" parse error.
+	body := []byte("---\nname: broken\ndescription: oops\nthis line has no colon\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Source{}.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var found bool
+	for _, it := range got {
+		if it.Kind == model.KindSkill && it.Name == "broken" {
+			found = true
+			if it.ParseError == "" {
+				t.Errorf("broken skill: ParseError empty, want a diagnostic")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("broken skill silently dropped from List() — PRI-18 regression")
+	}
+}
+
+// TestScanSkills_RecommendedFieldsAsWarnings checks that a SKILL.md
+// missing `description` ends up with a ValidationWarning rather than
+// being treated as outright invalid.
+func TestScanSkills_RecommendedFieldsAsWarnings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_STORE", t.TempDir())
+
+	skillDir := filepath.Join(home, ".claude", "skills", "no-desc")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("---\nname: no-desc\n---\nbody\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Source{}.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, it := range got {
+		if it.Kind == model.KindSkill && it.Name == "no-desc" {
+			if it.ParseError != "" {
+				t.Errorf("no-desc: ParseError = %q, want empty (warnings only)", it.ParseError)
+			}
+			if len(it.ValidationWarnings) == 0 {
+				t.Error("no-desc: ValidationWarnings empty, want a missing-description warning")
+			}
+			return
+		}
+	}
+	t.Fatal("no-desc skill missing from List() output")
+}

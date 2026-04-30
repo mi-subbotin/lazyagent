@@ -181,6 +181,18 @@ type Item struct {
 	// resolve before edits accidentally compound the divergence.
 	Drift bool
 
+	// ParseError is non-empty when the item's frontmatter or backing
+	// config could not be parsed cleanly. Adapters still surface the
+	// item — the TUI renders a red "(invalid)" badge and shows the
+	// raw bytes plus this message in the detail panel — so the user
+	// can see what is wrong instead of the file silently disappearing.
+	ParseError string
+	// ValidationWarnings collects non-fatal issues with an otherwise
+	// parseable item: missing recommended fields, suspicious values,
+	// etc. The TUI renders a yellow "(?)" badge when this slice is
+	// non-empty.
+	ValidationWarnings []string
+
 	// Private flags items the user almost never resumes manually:
 	// sessions started in /tmp, inside tool config dirs (~/.claude,
 	// ~/.codex, ~/.gemini, ~/.lazyagent), or under orchestrators that
