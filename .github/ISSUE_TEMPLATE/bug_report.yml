@@ -72,9 +72,19 @@ body:
       required: true
 
   - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste the output of `lazyagent logs tail` here (last 50 lines of `~/.lazyagent/logs/lazyagent.log`). If the bug is hard to reproduce, run with `lazyagent --verbose` first to capture more detail.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
     id: extra
     attributes:
       label: Anything else?
-      description: Logs, screenshots, related issues — anything that helps.
+      description: Screenshots, related issues — anything else that helps.
     validations:
       required: false

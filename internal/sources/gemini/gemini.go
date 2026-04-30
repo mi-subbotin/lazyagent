@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,7 @@ func scanAgents(dir string, scope model.Scope) []model.Item {
 		path := filepath.Join(dir, e.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
+			slog.Warn("gemini: skip agent", "path", path, "err", err)
 			continue
 		}
 		fm := parse.Parse(string(data))
@@ -142,6 +144,7 @@ func scanSkills(dir string, scope model.Scope) []model.Item {
 		path := filepath.Join(dir, e.Name(), "SKILL.md")
 		data, err := os.ReadFile(path)
 		if err != nil {
+			slog.Warn("gemini: skip skill", "path", path, "err", err)
 			continue
 		}
 		fm := parse.Parse(string(data))

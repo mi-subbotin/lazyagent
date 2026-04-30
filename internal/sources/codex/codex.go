@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,7 @@ func scanSkills(dir string, scope model.Scope) []model.Item {
 		path := filepath.Join(dir, e.Name(), "SKILL.md")
 		data, err := os.ReadFile(path)
 		if err != nil {
+			slog.Warn("codex: skip skill", "path", path, "err", err)
 			continue
 		}
 		fm := parse.Parse(string(data))

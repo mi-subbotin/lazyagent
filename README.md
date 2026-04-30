@@ -181,6 +181,26 @@ CLI helpers:
 
 Partial files are fine — only put the keys you want to override; everything else stays at the default. Unknown keys and invalid enum values become warnings on stderr and the offender resets to its default rather than aborting startup.
 
+## Troubleshooting
+
+`lazyagent` writes a structured log to `~/.lazyagent/logs/lazyagent.log` (rotated daily, kept for a week). Adapter parse failures, edit/copy/share/delete actions and startup metadata land there — nothing ever goes to stdout/stderr while the TUI is running, so the altscreen stays clean.
+
+```bash
+lazyagent --verbose                  # bump log level to debug for the next run
+lazyagent logs path                  # print the resolved log file path
+lazyagent logs tail                  # last 50 lines of the active log
+lazyagent logs tail -n 200           # more lines
+lazyagent logs clean                 # remove the active log + rotated siblings
+```
+
+Override location and format on a per-run basis:
+
+```bash
+lazyagent --log-file /tmp/lz.log --log-format json
+```
+
+For bug reports, please attach `lazyagent logs tail` output — the [`bug_report`](.github/ISSUE_TEMPLATE/bug_report.yml) issue form has a dedicated field for it.
+
 ## Roadmap
 
 - [x] Read-only TUI MVP across Claude / Codex / Gemini

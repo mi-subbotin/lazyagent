@@ -3,12 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mi-subbotin/lazyagent/internal/config"
+	"github.com/mi-subbotin/lazyagent/internal/logging"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/sources/claude"
 	"github.com/mi-subbotin/lazyagent/internal/sources/codex"
@@ -43,9 +46,20 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "logs" {
+		if err := runLogsSubcommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lazyagent:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	useMock := flag.Bool("mock", false, "use the mock data source instead of real adapters")
 	showVersion := flag.Bool("version", false, "print version information and exit")
+	verbose := flag.Bool("verbose", false, "increase log verbosity to debug")
+	flag.BoolVar(verbose, "v", false, "alias for --verbose")
+	logFile := flag.String("log-file", "", "override the log file path (defaults to logging.file from config)")
+	logFormat := flag.String("log-format", "", "log format: text or json (defaults to logging.format from config)")
 	flag.Parse()
 
 	if *showVersion {
@@ -54,6 +68,31 @@ func main() {
 	}
 
 	cfg := loadConfigOrWarn()
+
+	logOpts := logging.Options{
+		FileOverride:   *logFile,
+		FormatOverride: *logFormat,
+	}
+	if *verbose {
+		logOpts.LevelOverride = "debug"
+	}
+	logPath, logCloser, logErr := logging.Init(cfg, logOpts)
+	if logErr != nil {
+		// Logging is best-effort — the TUI still boots without it. Surface
+		// the error to stderr so users notice misconfigured paths.
+		fmt.Fprintln(os.Stderr, "lazyagent: logging disabled:", logErr)
+	}
+	defer logCloser.Close()
+
+	configPath, _ := config.DefaultPath()
+	slog.Info("starting lazyagent",
+		"version", version,
+		"commit", commit,
+		"os", runtime.GOOS,
+		"arch", runtime.GOARCH,
+		"config", configPath,
+		"log", logPath,
+	)
 
 	cwd, err := os.Getwd()
 	if err != nil {
