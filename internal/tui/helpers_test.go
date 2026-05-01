@@ -109,18 +109,6 @@ func TestNextFormat(t *testing.T) {
 	t.Errorf("nextFormat did not cycle within 10 steps; visited %d states", len(seen))
 }
 
-func TestUnsupportedCrossReason(t *testing.T) {
-	// unsupportedCrossReason currently returns the same generic
-	// stub for every pair — the pickerOption code already greys out
-	// supported targets, so the reason only ever shows up after a
-	// disabled-row tap. This test pins the contract until the
-	// finer-grained reasons land.
-	it := model.Item{Origin: model.OriginClaude, Kind: model.KindHook}
-	if got := unsupportedCrossReason(it, model.OriginCodex); got == "" {
-		t.Error("expected non-empty reason")
-	}
-}
-
 func TestDefaultExpanded(t *testing.T) {
 	m := defaultExpanded()
 	for _, k := range []string{"Claude", "Codex", "Gemini", "Claude/Hooks", "Gemini/Skills"} {

@@ -169,14 +169,14 @@ func Share(it model.Item, targets []model.Origin, overwrite bool) error {
 		return ErrShareUnsupported
 	}
 
-	sharedTo := make([]string, 0, len(targets))
+	projectedTo := make([]string, 0, len(targets))
 	for _, t := range targets {
-		sharedTo = append(sharedTo, t.String())
+		projectedTo = append(projectedTo, t.String())
 	}
 	manifest := store.Manifest{
-		Name:     it.Name,
-		Kind:     it.Kind.String(),
-		SharedTo: sharedTo,
+		Name:        it.Name,
+		Kind:        it.Kind.String(),
+		ProjectedTo: projectedTo,
 	}
 	if err := store.WriteManifest(store.ManifestPath(storeDir), manifest); err != nil {
 		return err
@@ -308,9 +308,9 @@ func Reshare(it model.Item, newTargets []model.Origin, overwrite bool) error {
 		// half-migrated install. We just write a fresh one.
 		m = store.Manifest{Name: it.Name, Kind: it.Kind.String()}
 	}
-	m.SharedTo = make([]string, 0, len(newTargets))
+	m.ProjectedTo = make([]string, 0, len(newTargets))
 	for _, t := range newTargets {
-		m.SharedTo = append(m.SharedTo, t.String())
+		m.ProjectedTo = append(m.ProjectedTo, t.String())
 	}
 	return store.WriteManifest(manifestPath, m)
 }

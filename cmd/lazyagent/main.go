@@ -48,7 +48,7 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "shared" {
+	if len(os.Args) > 1 && (os.Args[1] == "library" || os.Args[1] == "shared") {
 		if err := runSharedSubcommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "lazyagent:", err)
 			os.Exit(1)
@@ -157,14 +157,16 @@ func main() {
 	}
 	projectDir := detectProject(cwd)
 
-	// Make sure ~/.lazyagent/store/{skills,agents,mcp,prompts,memory}
-	// exists so the Shared origin and the `s` share action work without
-	// a manual setup step. Init is idempotent (mkdir -p underneath) and
-	// cheap on every launch. The Shared section in the tree is still
-	// data-driven — it only appears once the user actually has shared
-	// items, so an empty store doesn't add noise.
+	// Make sure ~/.lazyagent/library/{skills,agents,mcp,prompts,memory}
+	// exists so the Shared origin and the share action work without a
+	// manual setup step. Init is idempotent (mkdir -p underneath) and
+	// cheap on every launch; it also performs a one-shot
+	// store→library directory migration when upgrading. The Shared
+	// section in the tree is still data-driven — it only appears once
+	// the user actually has library items, so an empty library
+	// doesn't add noise.
 	if err := store.Init(); err != nil {
-		fmt.Fprintln(os.Stderr, "lazyagent: cannot init shared store:", err)
+		fmt.Fprintln(os.Stderr, "lazyagent: cannot init library:", err)
 		os.Exit(1)
 	}
 
@@ -448,11 +450,12 @@ func loadConfigOrWarn() *config.Config {
 	return cfg
 }
 
-// runSharedSubcommand dispatches `lazyagent shared <verb>`. Today
-// `init` and `sync` exist; future verbs (status, push, pull) plug in here.
+// runSharedSubcommand dispatches `lazyagent library <verb>` (and the
+// historical `lazyagent shared <verb>` alias). Today `init` and `sync`
+// exist; future verbs (status, push, pull) plug in here.
 func runSharedSubcommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lazyagent shared <init|sync> [flags]")
+		return fmt.Errorf("usage: lazyagent library <init|sync> [flags]")
 	}
 	switch args[0] {
 	case "init":
@@ -460,12 +463,12 @@ func runSharedSubcommand(args []string) error {
 			return err
 		}
 		root, _ := store.Root()
-		fmt.Printf("lazyagent shared store initialised at %s\n", root)
+		fmt.Printf("lazyagent library initialised at %s\n", root)
 		return nil
 	case "sync":
 		return runSharedSyncCommand(args[1:])
 	default:
-		return fmt.Errorf("unknown shared subcommand %q (try: init, sync)", args[0])
+		return fmt.Errorf("unknown library subcommand %q (try: init, sync)", args[0])
 	}
 }
 

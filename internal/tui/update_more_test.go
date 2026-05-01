@@ -8,68 +8,99 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/model"
 )
 
-func TestPendingCopyAndCancel(t *testing.T) {
+// PRI-65: legacy c/m/x/s overlays were collapsed into a single `p`
+// (place) overlay backed by ~/.lazyagent/library. The original four
+// tests are replaced by the placePicker tests below.
+
+func TestLegacyCopyKeyIsNoLongerWired(t *testing.T) {
 	m := newTestModel(t, fixtureItems(), "/tmp/proj")
 	m.expanded["Claude/Skills/Global"] = true
 	m.rebuildTree()
 	moveToFirstLeaf(&m)
+	before := m.pending
 	m = feed(t, m, "c")
-	if m.pending == nil || m.pending.kind != pendCopy {
-		t.Fatalf("c should open pending copy; pending=%v", m.pending)
-	}
-	m = feed(t, m, "esc")
-	if m.pending != nil {
-		t.Error("esc should cancel pending copy")
+	if m.pending != before {
+		t.Errorf("c must no longer open pending copy; pending=%v", m.pending)
 	}
 }
 
-func TestPendingMoveAndCancel(t *testing.T) {
-	m := newTestModel(t, fixtureItems(), "/tmp/proj")
-	m.expanded["Claude/Skills/Global"] = true
-	m.rebuildTree()
-	moveToFirstLeaf(&m)
-	m = feed(t, m, "m")
-	if m.pending == nil || m.pending.kind != pendMove {
-		t.Fatalf("m should open pending move; pending=%v", m.pending)
-	}
-	// y on a Move with valid item still triggers actions.Move which
-	// will fail because the source path doesn't exist; the toast or
-	// follow-up Msg surfaces the error. The harness just verifies the
-	// confirm overlay doesn't crash.
-	m = feed(t, m, "n")
-	if m.pending != nil {
-		t.Error("n should cancel pending move")
-	}
-}
-
-func TestCrossPickerOnSkill(t *testing.T) {
-	m := newTestModel(t, fixtureItems(), "/tmp/proj")
-	m.expanded["Claude/Skills/Global"] = true
-	m.rebuildTree()
-	moveToFirstLeaf(&m)
-	m = feed(t, m, "x")
-	if m.crossPicker == nil {
-		t.Fatal("x on a skill should open cross-picker")
-	}
-	m = feed(t, m, "esc")
-	if m.crossPicker != nil {
-		t.Error("esc should close cross-picker")
-	}
-}
-
-func TestSharePickerOpens(t *testing.T) {
+func TestLegacyShareKeyIsNoLongerWired(t *testing.T) {
 	m := newTestModel(t, fixtureItems(), "/tmp/proj")
 	m.expanded["Claude/Skills/Global"] = true
 	m.rebuildTree()
 	moveToFirstLeaf(&m)
 	m = feed(t, m, "s")
-	// Share picker either opens or sets a toast (depends on whether
-	// the item has any shareable target). Just verify no panic and
-	// that further keystrokes still process.
-	if m.sharePicker != nil {
-		m = feed(t, m, "esc")
-		if m.sharePicker != nil {
-			t.Error("esc should close share picker")
+	if m.placePicker != nil {
+		t.Error("s must not open place picker — only `p` should")
+	}
+}
+
+// `p` on a file-shaped skill must open the place picker.
+func TestPlacePickerOpensOnSkill(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "/tmp/proj")
+	m.expanded["Claude/Skills/Global"] = true
+	m.rebuildTree()
+	moveToFirstLeaf(&m)
+	m = feed(t, m, "p")
+	if m.placePicker == nil {
+		t.Fatal("p on a skill should open the place picker")
+	}
+	if len(m.placePicker.cells) != 3 {
+		t.Errorf("expected 3 origin rows, got %d", len(m.placePicker.cells))
+	}
+	m = feed(t, m, "esc")
+	if m.placePicker != nil {
+		t.Error("esc should close the place picker")
+	}
+}
+
+// Arrow keys move the cursor across the matrix; space toggles the
+// current cell. We exercise a small navigation script instead of
+// trusting indexing alone.
+func TestPlacePickerArrowsAndSpaceToggle(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "/tmp/proj")
+	m.expanded["Claude/Skills/Global"] = true
+	m.rebuildTree()
+	moveToFirstLeaf(&m)
+	m = feed(t, m, "p")
+	if m.placePicker == nil {
+		t.Fatal("place picker should open")
+	}
+	startRow := m.placePicker.cursorRow
+	startCol := m.placePicker.cursorCol
+	startChecked := m.placePicker.cells[startRow][startCol].checked
+
+	m = feed(t, m, " ")
+	if m.placePicker.cells[startRow][startCol].checked == startChecked {
+		t.Errorf("space should toggle cell at (%d,%d)", startRow, startCol)
+	}
+
+	m = feed(t, m, "right")
+	if m.placePicker.cursorCol == startCol {
+		t.Errorf("right arrow should move cursor; col stayed at %d", startCol)
+	}
+	m = feed(t, m, "down")
+	if m.placePicker.cursorRow == startRow {
+		t.Errorf("down arrow should move cursor; row stayed at %d", startRow)
+	}
+}
+
+// Local-scope cells are disabled when there is no project root —
+// space on a disabled cell is ignored.
+func TestPlacePickerLocalDisabledWithoutProjectDir(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "")
+	m.expanded["Claude/Skills/Global"] = true
+	m.rebuildTree()
+	moveToFirstLeaf(&m)
+	m = feed(t, m, "p")
+	if m.placePicker == nil {
+		t.Fatal("place picker should open")
+	}
+	for r, row := range m.placePicker.cells {
+		for c, cell := range row {
+			if cell.target.Scope == model.ScopeLocal && cell.enabled {
+				t.Errorf("local cell at (%d,%d) should be disabled without project dir", r, c)
+			}
 		}
 	}
 }

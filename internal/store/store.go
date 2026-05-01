@@ -1,9 +1,17 @@
-// Package store owns the lazyagent canonical store at
-// `~/.lazyagent/store/`. The store is the source of truth for shared
-// items (Skill/Agent/MCP/Prompt/Memory) that get projected into
-// individual tool directories via symlink (preferred) or copy
-// (fallback when the projection target lives under iCloud / Dropbox /
-// OneDrive, where symlinks are unreliable).
+// Package store owns the lazyagent library at
+// `~/.lazyagent/library/`. The library is the canonical, single source
+// of truth for items (Skill/Agent/MCP/Prompt/Memory) that get
+// projected into individual tool directories via symlink (preferred)
+// or copy (fallback when the projection target lives under iCloud /
+// Dropbox / OneDrive, where symlinks are unreliable). Storing every
+// shareable item once in the library keeps tools in sync without
+// duplicating bytes per tool.
+//
+// Historical name was "shared store" / `~/.lazyagent/store/`; the
+// directory is migrated to `library/` on first Init and the
+// LAZYAGENT_STORE env var is still honoured as an alias of the new
+// LAZYAGENT_LIBRARY. The package name `store` is preserved to avoid a
+// codebase-wide rename — it is purely an internal label now.
 //
 // This file lays the foundation: filesystem layout helpers + manifest
 // read/write. The projection / symlink manager and the lazyagent
@@ -22,16 +30,17 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/model"
 )
 
-// Root returns the on-disk root for the lazyagent shared store, with
+// Root returns the on-disk root for the lazyagent library, with
 // any leading symlinks resolved (e.g. macOS /var → /private/var) so
 // every consumer agrees on a single canonical form — symlinks created
 // by Share, comparisons in CanonicalItemDir, and reads via Readlink
 // all match without ad-hoc canonicalisation at the call sites.
 //
-// Override via LAZYAGENT_STORE in the environment. When the directory
-// doesn't exist yet (first Init / fresh install), EvalSymlinks fails
-// and we fall back to filepath.Abs so callers can still mkdir against
-// the path; the next call resolves cleanly once Init has run.
+// Override via LAZYAGENT_LIBRARY (preferred) or the legacy
+// LAZYAGENT_STORE in the environment. When the directory doesn't
+// exist yet (first Init / fresh install), EvalSymlinks fails and we
+// fall back to filepath.Abs so callers can still mkdir against the
+// path; the next call resolves cleanly once Init has run.
 func Root() (string, error) {
 	raw, err := rawRoot()
 	if err != nil {
@@ -43,7 +52,26 @@ func Root() (string, error) {
 	return filepath.Abs(raw)
 }
 
+// legacyRoot returns the path of the pre-rename store directory (or ""
+// if not derivable). Used only by Init to migrate an existing
+// ~/.lazyagent/store to ~/.lazyagent/library on first launch after
+// upgrade. When LAZYAGENT_LIBRARY or LAZYAGENT_STORE is set the user
+// is in control of the location and we don't second-guess them.
+func legacyRoot() string {
+	if os.Getenv("LAZYAGENT_LIBRARY") != "" || os.Getenv("LAZYAGENT_STORE") != "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".lazyagent", "store")
+}
+
 func rawRoot() (string, error) {
+	if v := os.Getenv("LAZYAGENT_LIBRARY"); v != "" {
+		return v, nil
+	}
 	if v := os.Getenv("LAZYAGENT_STORE"); v != "" {
 		return v, nil
 	}
@@ -51,7 +79,7 @@ func rawRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".lazyagent", "store"), nil
+	return filepath.Join(home, ".lazyagent", "library"), nil
 }
 
 // KindDir returns the per-Kind subdirectory inside the store root for
@@ -108,12 +136,32 @@ func Initialised() bool {
 	return err == nil && info.IsDir()
 }
 
-// Init creates the store root and per-Kind subdirectories. Idempotent
-// — re-running on a populated store leaves data untouched.
+// Init creates the library root and per-Kind subdirectories.
+// Idempotent — re-running on a populated library leaves data
+// untouched. On first run after upgrade, an existing legacy
+// ~/.lazyagent/store directory is renamed to ~/.lazyagent/library so
+// previously-shared items keep working without manual migration.
 func Init() error {
 	root, err := Root()
 	if err != nil {
 		return err
+	}
+	// One-shot migration: rename ~/.lazyagent/store → ~/.lazyagent/library
+	// when the legacy directory exists and the new one does not. Only
+	// runs in the env-unset default case (legacyRoot returns "" when
+	// the user explicitly set LAZYAGENT_LIBRARY / LAZYAGENT_STORE) so
+	// it can't surprise users with custom layouts.
+	if legacy := legacyRoot(); legacy != "" {
+		if _, errNew := os.Stat(root); errNew != nil && os.IsNotExist(errNew) {
+			if info, errOld := os.Stat(legacy); errOld == nil && info.IsDir() {
+				if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+					return fmt.Errorf("library migration: prep parent: %w", err)
+				}
+				if err := os.Rename(legacy, root); err != nil {
+					return fmt.Errorf("library migration: rename %s → %s: %w", legacy, root, err)
+				}
+			}
+		}
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
@@ -130,22 +178,35 @@ func Init() error {
 	return nil
 }
 
-// Manifest is the shared-item descriptor co-located with each item in
-// the store. Lives at `<itemDir>/manifest.toml`. Format choice: TOML
-// (already a dependency, comment support, simple round-trip via
+// Manifest is the library-item descriptor co-located with each item
+// in the library. Lives at `<itemDir>/manifest.toml`. Format choice:
+// TOML (already a dependency, comment support, simple round-trip via
 // BurntSushi/toml). The original PRI-2 plan called for YAML — TOML
 // here avoids a new dep and reads about the same for this shape.
+//
+// `ProjectedTo` records which tools this library item is currently
+// projected to (claude / codex / gemini). Old manifests used
+// `shared_to`; ReadManifest accepts either spelling and WriteManifest
+// always emits the new one. PRI-65.
 type Manifest struct {
-	Name      string   `toml:"name"`
-	Version   string   `toml:"version,omitempty"`
-	Kind      string   `toml:"kind"` // Skill | Agent | MCP | Prompt | Memory
+	Name        string   `toml:"name"`
+	Version     string   `toml:"version,omitempty"`
+	Kind        string   `toml:"kind"` // Skill | Agent | MCP | Prompt | Memory
+	ProjectedTo []string `toml:"projected_to,omitempty"`
+	// SharedTo is the legacy spelling, kept on the struct purely so
+	// BurntSushi/toml unmarshals old manifests without losing data.
+	// ReadManifest folds it into ProjectedTo and clears the field;
+	// WriteManifest never emits it.
 	SharedTo  []string `toml:"shared_to,omitempty"`
 	SourceURL string   `toml:"source_url,omitempty"` // populated by PRI-3 github install
 }
 
 // ReadManifest parses the manifest at path. Returns fs.ErrNotExist
 // when the file is missing — the adapter treats that as "this item
-// isn't in the shared store" and skips it without raising.
+// isn't in the library" and skips it without raising. Old manifests
+// that wrote `shared_to` are still readable: the legacy field is
+// folded into ProjectedTo and the legacy slot is cleared so callers
+// only ever see one source of truth.
 func ReadManifest(path string) (Manifest, error) {
 	var m Manifest
 	data, err := os.ReadFile(path)
@@ -155,13 +216,19 @@ func ReadManifest(path string) (Manifest, error) {
 	if err := toml.Unmarshal(data, &m); err != nil {
 		return m, fmt.Errorf("%s: %w", path, err)
 	}
+	if len(m.ProjectedTo) == 0 && len(m.SharedTo) > 0 {
+		m.ProjectedTo = m.SharedTo
+	}
+	m.SharedTo = nil
 	return m, nil
 }
 
 // WriteManifest writes path atomically (tmp + rename). Parent dir is
 // created as needed. The temp file lives in the same directory as
-// path so the rename stays on one filesystem.
+// path so the rename stays on one filesystem. The legacy SharedTo
+// field is never written — only `projected_to` lands on disk.
 func WriteManifest(path string, m Manifest) error {
+	m.SharedTo = nil
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

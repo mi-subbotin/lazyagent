@@ -41,7 +41,7 @@ hero so the layout already matches the eventual design.
 
 <p align="center"><sub>Split-pane tree on the left, glamour-rendered detail on the right. <code>j</code>/<code>k</code> to navigate, <code>tab</code> to drill in, <code>?</code> for help.</sub></p>
 
-> **TL;DR** — One TUI for every Claude Code, Codex and Gemini CLI artifact in your home directory. Browse, edit, copy across tools, share a single canonical version into all three, install skills/agents from any public GitHub repo. Local-first, no telemetry, brew-installable.
+> **TL;DR** — One TUI for every Claude Code, Codex and Gemini CLI artifact in your home directory. Browse, edit, **place** a single canonical version into the lazyagent library and project it into all three tools, install skills/agents from any public GitHub repo. Local-first, no telemetry, brew-installable.
 
 ---
 
@@ -70,7 +70,7 @@ Three CLIs, three home directories, three ways of doing the same thing. If you u
 - **Duplicates by hand**: the only way to use a skill in all three tools is to `cp -r` it, which forks the moment you edit one copy.
 - **No common view**: there's no way to see at a glance which prompts you have, which MCP servers are wired up, or which agent is project-local vs global.
 
-`lazyagent` puts all of that in a single tree, supports cross-tool copy with format conversion where needed, and — once you opt in — projects a single canonical version into every tool via symlinks (or copies on cloud-synced volumes), so editing one place updates everywhere.
+`lazyagent` puts all of that in a single tree and — through a single unified `place` action — keeps **one canonical copy** of each item in `~/.lazyagent/library/` and projects it into every tool you pick via symlinks (or copies on cloud-synced volumes), so editing one place updates everywhere.
 
 ## Install
 
@@ -130,14 +130,13 @@ Local-scope rows show only when `lazyagent` is launched from a directory that co
 | Prompts / slash commands                   |   ✓    |   ✓   |   ✓ ²  |
 | Memory file (`CLAUDE.md`/`AGENTS.md`/...)  |   ✓    |   ✓   |   ✓    |
 | Hooks (PreToolUse / PostToolUse / …)       |   ✓ ⁴  |   —   |   —    |
-| Cross-tool copy (`x`)                      |   ✓    |   ✓   |   ✓    |
+| Place to library + projections (`p`)       |   ✓    |   ✓ ³ |   ✓ ³  |
 | Inline edit (`E`) + external editor (`e`)  |   ✓    |   ✓   |   ✓    |
-| Shared canonical store + projection (`s`)  |   ✓    |   ✓ ³ |   ✓ ³  |
 | Drift detection + resync (`R`)             |   ✓    |   ✓   |   ✓    |
 
-¹ Codex agents are stored as `[profiles.<name>]` entries in `config.toml`; cross-tool copy converts the body, lossy in either direction.<br>
-² Gemini commands are TOML; cross-copy from Claude/Codex (markdown) requires a frontmatter → TOML rewrite.<br>
-³ Codex agents and Gemini prompts can't be shared yet without format conversion — the share picker greys them out.<br>
+¹ Codex agents are stored as `[profiles.<name>]` entries in `config.toml`; format conversion to/from `agent.md` is deferred (PRI-68).<br>
+² Gemini commands are TOML; conversion from Claude/Codex markdown is deferred (PRI-68).<br>
+³ The place picker greys out cells that need format conversion until PRI-68 lands. MCP/Hook entry-shape items are also deferred from `p` (PRI-69) — use the legacy CLI flow for now.<br>
 ⁴ Codex / Gemini hook adapters are deferred — formats need verification on a live install (PRI-57).
 
 <p align="center">
@@ -165,11 +164,10 @@ fallbacks for the GitHub crawler that doesn't render videos.
   esc      clear filter / cancel filter editor / cancel confirm
   t        toggle JSON / TOML for MCP entries
   d        delete item (asks y/n)
-  c        copy item to the other scope (Global ↔ Local)
-  m        move item to the other scope
-  x        cross-tool copy (pick target Origin / scope)
-  s        share to lazyagent store + project to selected tools
-  R        resync drifted shared item (canonical / tool wins)
+  p        place item — pick which (Origin × Scope) cells project the
+           item from the library; bytes live once in ~/.lazyagent/library
+           and project back to each chosen cell (replaces legacy c/m/x/s)
+  R        resync drifted library item (canonical / tool wins)
   e        open in $EDITOR (external)
   E        edit in built-in editor (ctrl+s save · esc cancel)
   n        create new Skill / Agent / Prompt
@@ -180,23 +178,38 @@ fallbacks for the GitHub crawler that doesn't render videos.
 
 `lazyagent` — read-only by default for everything it doesn't recognise. Editing actions are explicit and confirm before destructive ops.
 
-## Shared store
+## How storage works — the library
 
-The shared store at `~/.lazyagent/store/` holds one canonical copy of each item you've opted into sharing. `lazyagent` creates it on first launch — no separate `init` step.
+`lazyagent` stores every shareable item **once**, in the library at `~/.lazyagent/library/`, and projects it back to each tool that needs it. No duplicate copies, no fork-on-edit. The library is created on first launch — no separate `init` step. (An older `~/.lazyagent/store/` directory is migrated automatically.)
 
 ```
-~/.lazyagent/store/
+~/.lazyagent/library/
   skills/<name>/{SKILL.md, manifest.toml, ...}
   agents/<name>/{agent.md, manifest.toml}
   prompts/<name>/{prompt.md, manifest.toml}
   memory/<name>/{memory.md, manifest.toml}
-  mcp/...                 (deferred to v0.2)
+  mcp/...                 (deferred — PRI-69)
 ```
 
-Pressing `s` on any per-tool item opens a multi-select picker (`[x] Claude  [x] Codex  [x] Gemini`), moves the bytes into the store, and projects them back to each selected tool — symlink by default, byte-copy on iCloud / Dropbox / OneDrive / Google Drive volumes where symlinks don't sync. Pressing `s` again on a shared item lets you change the projection set; pressing `R` on an item the detector flagged with `(drift)` opens the canonical-vs-tool resync overlay.
+Pressing `p` on any per-tool item opens a single picker:
+
+```
+Place skill foo:
+
+  Library: yes  (canonical bytes — for optimization)
+
+           Global   Local
+  Claude   [x]      [ ]
+  Codex    [ ]      [ ]
+  Gemini   [x]      [ ]
+
+  [arrows] move  [space] toggle  [enter] apply  [esc] cancel
+```
+
+Apply moves the bytes into the library (if not already there) and reconciles every `(Origin, Scope)` cell — symlink by default, byte-copy on iCloud / Dropbox / OneDrive / Google Drive volumes where symlinks don't sync. Unticking a cell unprojects it; an empty matrix is valid (item lives only in the library, no projections — like `git stash`). Pressing `p` again on a placed item lets you reshape the projection set. Pressing `R` on an item the detector flagged with `(drift)` opens the canonical-vs-tool resync overlay.
 
 <p align="center">
-  <img src="assets/detail-zoom.png" alt="Zoomed detail view of a shared skill — note the canonical path under ~/.lazyagent/store/ and the json/toml/back footer" width="900">
+  <img src="assets/detail-zoom.png" alt="Zoomed detail view of a placed skill — note the canonical path under ~/.lazyagent/library/ and the json/toml/back footer" width="900">
 </p>
 
 ## Configuration
@@ -327,7 +340,7 @@ For bug reports, please attach `lazyagent logs tail` output — the [`bug_report
 ## Roadmap
 
 - [x] Read-only TUI MVP across Claude / Codex / Gemini
-- [x] Cross-tool copy with conflict pre-flight (`x`)
+- [x] Unified place picker (`p`) — Origin × Scope matrix backed by a single library copy (PRI-65)
 - [x] Inline editor with mtime conflict detection (`E`)
 - [x] Shared canonical store + symlink projector + drift detection (`s` / `R`)
 - [ ] [Backlog: editing all tool-specific configs from one place (`PRI-1`)](https://linear.app/obscurectl/issue/PRI-1)
@@ -338,7 +351,7 @@ For bug reports, please attach `lazyagent logs tail` output — the [`bug_report
 
 ## Privacy
 
-`lazyagent` runs entirely local. It reads files from your home directory and your project, and writes only when you trigger an explicit action (delete / copy / move / cross / share / resync / edit). No telemetry, no analytics.
+`lazyagent` runs entirely local. It reads files from your home directory and your project, and writes only when you trigger an explicit action (delete / place / resync / edit). No telemetry, no analytics.
 
 The only outbound traffic is an optional weekly check of the GitHub releases API for an "↑ vX.Y.Z available" banner. Disable with `[updates] notify = false` in `~/.lazyagent/config.toml` or `--no-update-check` on a single launch.
 

@@ -43,8 +43,6 @@ type pendingKind int
 
 const (
 	pendDelete pendingKind = iota
-	pendCopy
-	pendMove
 )
 
 type pendingOp struct {
@@ -64,41 +62,10 @@ type createOverlay struct {
 	err    string
 }
 
-// crossPicker drives the "where to copy across tools" overlay. Options
-// are pre-filtered to those SupportsCross approves of, so the user only
-// ever sees combinations the actions package can actually perform.
-type crossPicker struct {
-	item    model.Item
-	options []crossOption
-}
-
-type crossOption struct {
-	target   model.Origin
-	scope    model.Scope
-	lossy    bool
-	disabled bool
-	reason   string
-}
-
-func (o crossOption) label() string {
-	s := fmt.Sprintf("%s (%s)", o.target, o.scope)
-	switch {
-	case o.disabled:
-		s += " — " + o.reason
-	case o.lossy:
-		s += " — lossy"
-	}
-	return s
-}
-
 func (p pendingOp) verb() string {
 	switch p.kind {
 	case pendDelete:
 		return "Delete"
-	case pendCopy:
-		return "Copy to other scope"
-	case pendMove:
-		return "Move to other scope"
 	}
 	return "?"
 }
@@ -146,13 +113,10 @@ type Model struct {
 	// j/k scroll the body, t toggles JSON/TOML, esc returns to split.
 	detailFull bool
 
-	// crossPicker is non-nil while the user is choosing a target tool
-	// for cross-tool copy. The user picks via numeric keys (1-N).
-	crossPicker *crossPicker
-
-	// sharePicker is non-nil while the multi-select share overlay is
-	// open. Targets are toggled with space, confirmed with enter.
-	sharePicker *sharePicker
+	// placePicker is non-nil while the unified place overlay is open
+	// (key `p`). Replaces the legacy copy/move/cross/share keys with a
+	// single Origin × Scope matrix backed by ~/.lazyagent/library.
+	placePicker *placePicker
 
 	// resyncPicker is non-nil while the drift-resolution overlay is
 	// open. Single keypress (c/t/esc) decides which side wins.
@@ -565,14 +529,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirm(msg)
 		}
 
-		// Cross-tool target picker: digits select, esc cancels.
-		if m.crossPicker != nil {
-			return m.updateCrossPicker(msg)
-		}
-
-		// Share picker: multi-select checklist; space toggles, enter commits.
-		if m.sharePicker != nil {
-			return m.updateSharePicker(msg)
+		// Place picker: unified Origin × Scope matrix overlay (`p`).
+		// Replaces the legacy copy/move/cross/share entry points.
+		if m.placePicker != nil {
+			return m.updatePlacePicker(msg)
 		}
 
 		// Resync picker: c/t/esc.
@@ -672,36 +632,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pending = &pendingOp{kind: pendDelete, item: it}
 			}
 			return m, nil
-		case "c":
-			if it, ok := m.currentItem(); ok {
-				m.pending = &pendingOp{kind: pendCopy, item: it}
-			}
-			return m, nil
-		case "m":
-			if it, ok := m.currentItem(); ok {
-				m.pending = &pendingOp{kind: pendMove, item: it}
-			}
-			return m, nil
-		case "x":
-			if it, ok := m.currentItem(); ok {
-				if p := newCrossPicker(it, m.projectDir); p != nil {
-					m.crossPicker = p
-				} else {
-					m.setToast("no cross-tool targets for this item")
-				}
-			}
-			return m, nil
-		case "s":
+		case "p":
 			it, ok := m.currentItem()
 			if !ok {
 				return m, nil
 			}
-			p, err := newSharePicker(it)
+			p, err := newPlacePicker(it, m.projectDir)
 			if err != nil {
 				m.setToast(err.Error())
 				return m, nil
 			}
-			m.sharePicker = p
+			m.placePicker = p
 			return m, nil
 		case "R":
 			it, ok := m.currentItem()
@@ -845,81 +786,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTree(msg)
 		}
 		return m.updateDetail(msg)
-	}
-	return m, nil
-}
-
-// newCrossPicker builds a picker overlay listing every (target, scope)
-// destination so the user sees the full landscape — disabled rows
-// explain why a particular destination is unavailable instead of being
-// silently filtered out. Returns nil only when literally nothing is
-// selectable (in which case the caller surfaces a toast).
-func newCrossPicker(it model.Item, projectDir string) *crossPicker {
-	var opts []crossOption
-	var anyEnabled bool
-	for _, target := range []model.Origin{model.OriginClaude, model.OriginCodex, model.OriginGemini} {
-		if target == it.Origin {
-			continue
-		}
-		supported := actions.SupportsCross(it, target)
-		for _, scope := range []model.Scope{model.ScopeGlobal, model.ScopeLocal} {
-			opt := crossOption{target: target, scope: scope}
-			switch {
-			case !supported:
-				opt.disabled = true
-				opt.reason = unsupportedCrossReason(it, target)
-			case scope == model.ScopeLocal && projectDir == "":
-				opt.disabled = true
-				opt.reason = "no project local scope"
-			default:
-				opt.lossy = actions.IsLossyCross(it, target)
-				anyEnabled = true
-			}
-			opts = append(opts, opt)
-		}
-	}
-	if !anyEnabled {
-		return nil
-	}
-	return &crossPicker{item: it, options: opts}
-}
-
-// unsupportedCrossReason returns a short human-readable reason why a
-// particular target origin cannot accept the given item. With current
-// support all three tools have skills / agents / mcp / prompts / memory,
-// so this is just a fallback for unknown-future combinations.
-func unsupportedCrossReason(it model.Item, target model.Origin) string {
-	return "no mapping defined"
-}
-
-// updateCrossPicker handles keystrokes while the cross-tool target
-// picker overlay is open.
-func (m Model) updateCrossPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	s := msg.String()
-	if s == "esc" || s == "q" {
-		m.crossPicker = nil
-		return m, nil
-	}
-	if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-		idx := int(s[0] - '1')
-		if idx >= len(m.crossPicker.options) {
-			return m, nil
-		}
-		opt := m.crossPicker.options[idx]
-		if opt.disabled {
-			m.setToast(opt.reason)
-			return m, nil
-		}
-		it := m.crossPicker.item
-		m.crossPicker = nil
-		err := actions.CrossCopy(it, opt.target, opt.scope, m.projectDir)
-		if err != nil {
-			m.setToast(fmt.Sprintf("cross-copy: %s", err.Error()))
-			return m, nil
-		}
-		m.setToast(fmt.Sprintf("Copied %s → %s (%s)", it.Name, opt.target, opt.scope))
-		m.loading = true
-		return m, m.loadCmd()
 	}
 	return m, nil
 }
@@ -1167,10 +1033,6 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch op.kind {
 		case pendDelete:
 			err = actions.Delete(op.item)
-		case pendCopy:
-			err = actions.Copy(op.item, m.projectDir)
-		case pendMove:
-			err = actions.Move(op.item, m.projectDir)
 		}
 		if err != nil {
 			m.setToast(formatActionError(op, err))
@@ -1633,12 +1495,9 @@ func (m Model) defaultStatusLine() string {
 		if it.Kind == model.KindMCP || it.Storage == model.StorageEntry {
 			ctx = append(ctx, "t json/toml")
 		}
-		ctx = append(ctx, "d del", "c copy", "m move", "x cross")
-		switch {
-		case it.Shared:
-			ctx = append(ctx, "s reshare")
-		case actions.CanShare(it):
-			ctx = append(ctx, "s share")
+		ctx = append(ctx, "d del")
+		if actions.CanPlace(it) {
+			ctx = append(ctx, "p place")
 		}
 		if it.Drift {
 			ctx = append(ctx, "R resync")
@@ -1683,10 +1542,9 @@ func helpText() string {
 		"  esc      clear filter / cancel filter editor / cancel confirm\n" +
 		"  t        toggle JSON / TOML for MCP entries\n" +
 		"  d        delete item (asks y/n)\n" +
-		"  c        copy item to the other scope (Global ↔ Local)\n" +
-		"  m        move item to the other scope\n" +
-		"  x        cross-tool copy (pick target Origin / scope)\n" +
-		"  s        share to lazyagent store + project to selected tools\n" +
+		"  p        place item — pick which (Origin × Scope) cells project\n" +
+		"           the item from the library; bytes live once in\n" +
+		"           ~/.lazyagent/library and project back to each chosen cell\n" +
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
@@ -1704,44 +1562,10 @@ func helpText() string {
 }
 
 // crossPickerText renders the cross-tool target picker overlay.
-func crossPickerText(p crossPicker) string {
-	var lines []string
-	lines = append(lines, titleStyle.Render("Cross-tool copy"))
-	lines = append(lines, "")
-	lines = append(lines, "  "+p.item.Name+dimStyle.Render(
-		fmt.Sprintf("  (%s · %s · %s)", p.item.Origin, p.item.Kind, p.item.Scope)))
-	lines = append(lines, "")
-	lines = append(lines, "Choose target:")
-	for i, opt := range p.options {
-		row := fmt.Sprintf("  %d. %s", i+1, opt.label())
-		if opt.disabled {
-			row = dimStyle.Render(row)
-		}
-		lines = append(lines, row)
-	}
-	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render(
-		fmt.Sprintf("press 1-%d to select · esc to cancel", len(p.options))))
-	return strings.Join(lines, "\n")
-}
-
 // confirmText is the body of the "are you sure?" overlay shown for
-// destructive actions.
-func confirmText(p pendingOp, projectDir string) string {
-	target := "(other scope)"
-	if p.kind == pendCopy || p.kind == pendMove {
-		switch p.item.Scope {
-		case model.ScopeGlobal:
-			if projectDir == "" {
-				target = "Local — but no project detected!"
-			} else {
-				target = "Local (" + projectDir + ")"
-			}
-		case model.ScopeLocal:
-			target = "Global"
-		}
-	}
-
+// destructive actions. Currently only delete uses this — copy/move
+// were merged into the place overlay (key `p`).
+func confirmText(p pendingOp, _ string) string {
 	var lines []string
 	lines = append(lines, titleStyle.Render(p.verb()))
 	lines = append(lines, "")
@@ -1752,10 +1576,6 @@ func confirmText(p pendingOp, projectDir string) string {
 	switch p.kind {
 	case pendDelete:
 		lines = append(lines, "Permanently remove from disk.")
-	case pendCopy:
-		lines = append(lines, "Copy to: "+target)
-	case pendMove:
-		lines = append(lines, "Move to: "+target)
 	}
 	lines = append(lines, "")
 	lines = append(lines, dimStyle.Render("y to confirm · n / esc to cancel"))
@@ -1904,11 +1724,8 @@ func (m Model) View() string {
 	} else if m.pending != nil {
 		body = overlay(body, confirmText(*m.pending, m.projectDir),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
-	} else if m.crossPicker != nil {
-		body = overlay(body, crossPickerText(*m.crossPicker),
-			innerW+gap+panelBorderW*2, contentH+panelBorderH)
-	} else if m.sharePicker != nil {
-		body = overlay(body, sharePickerText(*m.sharePicker),
+	} else if m.placePicker != nil {
+		body = overlay(body, placePickerText(*m.placePicker),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	} else if m.resyncPicker != nil {
 		body = overlay(body, resyncPickerText(*m.resyncPicker),
@@ -1932,10 +1749,8 @@ func (m Model) View() string {
 		statusLine = " j/k scroll · space pgdn · g/G top/end · t json/toml · tab/esc back "
 	case m.filterMode:
 		statusLine = " filter · ↑↓ navigate · tab/enter open · esc cancel · backspace edit · ctrl+u clear "
-	case m.crossPicker != nil:
-		statusLine = " 1-9 select target · esc cancel "
-	case m.sharePicker != nil:
-		statusLine = " ↑↓ move · space toggle · enter share · esc cancel "
+	case m.placePicker != nil:
+		statusLine = " arrows move · space toggle · enter apply · esc cancel "
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "
 	default:
