@@ -22,6 +22,14 @@ import (
 // hold the user/assistant turns; we sniff the leading turns just enough
 // to extract the project cwd and the first user prompt — enough for a
 // scannable list row without slurping multi-megabyte transcripts.
+//
+// Top-level files are user-driven sessions. Newer Claude releases also
+// drop subagent transcripts at
+// `<encoded>/<sessionId>/subagents/agent-*.jsonl` — those carry
+// `isSidechain: true` on every message and represent Task-tool spawns
+// rather than resumable chats. We descend one level into `subagents/`
+// directories and tag the resulting items with Agent=true so the TUI
+// can hide them by default (PRI-70).
 func scanSessions(claudeHome, projectDir string) []model.Item {
 	projectsDir := filepath.Join(claudeHome, "projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -34,26 +42,58 @@ func scanSessions(claudeHome, projectDir string) []model.Item {
 			continue
 		}
 		encoded := projDir.Name()
-		files, err := os.ReadDir(filepath.Join(projectsDir, encoded))
-		if err != nil {
-			continue
-		}
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
-				continue
-			}
-			full := filepath.Join(projectsDir, encoded, f.Name())
-			it, ok := readClaudeSession(full, encoded, projectDir)
-			if !ok {
-				continue
-			}
-			out = append(out, it)
-		}
+		encodedRoot := filepath.Join(projectsDir, encoded)
+		out = scanSessionsIn(encodedRoot, encoded, projectDir, out)
 	}
 	// Newest first so the list reads top-down by recency.
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Meta["lastUpdated"] > out[j].Meta["lastUpdated"]
 	})
+	return out
+}
+
+// scanSessionsIn walks an encoded-cwd directory, picking up top-level
+// .jsonl files (user sessions) and descending into any `subagents/`
+// subdirectories of per-session folders (Task-tool spawns). All other
+// directory contents are ignored.
+func scanSessionsIn(root, encoded, projectDir string, out []model.Item) []model.Item {
+	files, err := os.ReadDir(root)
+	if err != nil {
+		return out
+	}
+	for _, f := range files {
+		if f.IsDir() {
+			// Per-session folder — only the `subagents` subtree is of
+			// interest. Anything else (Claude has used several layouts
+			// over time) is silently skipped.
+			subagentsDir := filepath.Join(root, f.Name(), "subagents")
+			info, err := os.Stat(subagentsDir)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			subFiles, err := os.ReadDir(subagentsDir)
+			if err != nil {
+				continue
+			}
+			for _, sf := range subFiles {
+				if sf.IsDir() || !strings.HasSuffix(sf.Name(), ".jsonl") {
+					continue
+				}
+				full := filepath.Join(subagentsDir, sf.Name())
+				if it, ok := readClaudeSession(full, encoded, projectDir); ok {
+					out = append(out, it)
+				}
+			}
+			continue
+		}
+		if !strings.HasSuffix(f.Name(), ".jsonl") {
+			continue
+		}
+		full := filepath.Join(root, f.Name())
+		if it, ok := readClaudeSession(full, encoded, projectDir); ok {
+			out = append(out, it)
+		}
+	}
 	return out
 }
 
@@ -70,6 +110,11 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 	}
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 
+	// Path-based agent detection: subagent jsonls live at
+	// <encoded>/<sessionId>/subagents/agent-*.jsonl. Cheap and runs
+	// before any line parsing.
+	agent := isAgentPath(path)
+
 	var (
 		firstUserMsg string
 		cwd          string
@@ -82,8 +127,9 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 	for scanner.Scan() {
 		// Stop once we have what we need or after a generous prefix —
 		// session files are append-only, the first user message and cwd
-		// always appear near the start.
-		if firstUserMsg != "" && cwd != "" {
+		// always appear near the start. We always read at least the
+		// first line so the isSidechain content fallback runs.
+		if firstUserMsg != "" && cwd != "" && seenLines > 0 {
 			break
 		}
 		if seenLines > 200 {
@@ -95,15 +141,21 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 			continue
 		}
 		var rec struct {
-			Type    string          `json:"type"`
-			Cwd     string          `json:"cwd"`
-			Message json.RawMessage `json:"message"`
+			Type        string          `json:"type"`
+			Cwd         string          `json:"cwd"`
+			Message     json.RawMessage `json:"message"`
+			IsSidechain *bool           `json:"isSidechain"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}
 		if cwd == "" && rec.Cwd != "" {
 			cwd = rec.Cwd
+		}
+		if !agent && rec.IsSidechain != nil && *rec.IsSidechain {
+			// Content fallback for layouts where subagent transcripts
+			// land at the top level; the path check has already run.
+			agent = true
 		}
 		if firstUserMsg == "" && rec.Type == "user" && len(rec.Message) > 0 {
 			firstUserMsg = extractClaudeMessageText(rec.Message)
@@ -157,6 +209,7 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 		Kind:        model.KindSession,
 		Scope:       scope,
 		Private:     private,
+		Agent:       agent,
 		Name:        preview,
 		Path:        path,
 		Description: desc,
@@ -165,6 +218,15 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 		ConfigKey:   sessionID,
 		Meta:        meta,
 	}, true
+}
+
+// isAgentPath reports whether `path` lives under a Claude
+// `<sessionId>/subagents/` directory — the canonical layout for
+// Task-tool spawn transcripts. Cheap path-only check; no I/O. The
+// content-side fallback in readClaudeSession (`isSidechain: true` in
+// the first message) handles older / alternative layouts.
+func isAgentPath(path string) bool {
+	return strings.Contains(filepath.ToSlash(path), "/subagents/")
 }
 
 // formatTokens renders a token count as 1.2k / 3.4M for compact list

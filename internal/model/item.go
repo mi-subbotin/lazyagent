@@ -213,4 +213,13 @@ type Item struct {
 	// subgroup that's collapsed by default so they don't dominate the
 	// listing. Currently only KindSession sets this.
 	Private bool
+
+	// Agent flags KindSession items that were spawned by a Task-tool
+	// invocation (Claude subagent / sidechain). They live alongside
+	// the parent transcript at <encoded-cwd>/<sessionId>/subagents/
+	// and every message inside has `isSidechain: true`. They are not
+	// user-resumable in the normal sense — surfacing them in the
+	// Sessions tree creates noise (often 5–10× the count of real
+	// chats). The TUI hides them by default; PRI-70.
+	Agent bool
 }

@@ -25,6 +25,12 @@ import (
 type State struct {
 	HidePrivateSessions bool `json:"hide_private_sessions,omitempty"`
 
+	// ShowAgentSessions defaults to false — Task-tool subagent
+	// transcripts are noise for the typical user (often 5–10× the
+	// count of real chats) and stay hidden until they explicitly
+	// enable the toggle. PRI-70.
+	ShowAgentSessions bool `json:"show_agent_sessions,omitempty"`
+
 	// PRI-19: weekly update check. LastUpdateCheckAt is unix seconds of
 	// the last successful poll against the GitHub releases API;
 	// LatestKnownVersion is the most recent tag we saw (with the leading

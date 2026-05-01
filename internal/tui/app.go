@@ -166,6 +166,13 @@ type Model struct {
 	// ~/.lazyagent/state.json so the preference survives across runs.
 	hidePrivateSessions bool
 
+	// showAgentSessions includes Task-tool subagent transcripts in
+	// the Sessions tree. Default false (hidden) — these spawn-chats
+	// are not user-resumable and tend to outnumber real chats by an
+	// order of magnitude. Toggled by G, persisted alongside
+	// HidePrivateSessions. PRI-70.
+	showAgentSessions bool
+
 	// installing drives the `i` GitHub-install wizard (PRI-3.D). All
 	// modal phases — URL input, fetch, candidate checklist, target
 	// chooser, conflict prompts and the final summary — share state
@@ -209,6 +216,7 @@ func New(srcs []sources.Source, projectDir string) Model {
 		glamourCache:        map[string][]string{},
 		sessionBodyCache:    map[string]string{},
 		hidePrivateSessions: st.HidePrivateSessions,
+		showAgentSessions:   st.ShowAgentSessions,
 	}
 }
 
@@ -681,13 +689,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// runs. Tree rebuilds immediately so the user sees the
 			// effect without a manual reload.
 			m.hidePrivateSessions = !m.hidePrivateSessions
-			if err := state.Save(state.State{HidePrivateSessions: m.hidePrivateSessions}); err != nil {
-				m.setToast("save state: " + err.Error())
+			if st, err := state.Load(); err == nil {
+				st.HidePrivateSessions = m.hidePrivateSessions
+				if err := state.Save(st); err != nil {
+					m.setToast("save state: " + err.Error())
+				}
 			}
 			if m.hidePrivateSessions {
 				m.setToast("private sessions hidden")
 			} else {
 				m.setToast("private sessions visible")
+			}
+			m.rebuildTree()
+			return m, nil
+		case "G":
+			// Toggle visibility of subagent (Task-tool spawn) sessions.
+			// Default-off so the Sessions tree shows resumable chats
+			// only; turn it on for debugging which Task-call did what.
+			// Persists alongside HidePrivateSessions. PRI-70.
+			m.showAgentSessions = !m.showAgentSessions
+			if st, err := state.Load(); err == nil {
+				st.ShowAgentSessions = m.showAgentSessions
+				if err := state.Save(st); err != nil {
+					m.setToast("save state: " + err.Error())
+				}
+			}
+			if m.showAgentSessions {
+				m.setToast("agent sessions visible")
+			} else {
+				m.setToast("agent sessions hidden")
 			}
 			m.rebuildTree()
 			return m, nil
@@ -1259,6 +1289,13 @@ func (m *Model) rebuildTree() {
 		if filter != "" && !itemMatches(it, filter) {
 			continue
 		}
+		// PRI-70: subagent (Task-tool spawn) transcripts are hidden
+		// by default — there are typically far more of them than
+		// real chats and they are not user-resumable. The G toggle
+		// flips this for debugging.
+		if it.Agent && !m.showAgentSessions {
+			continue
+		}
 		b := buckets[it.Origin].kinds[it.Kind]
 		switch {
 		case it.Private:
@@ -1325,9 +1362,13 @@ func (m *Model) rebuildTree() {
 				gPath := kPath + "/Global"
 				tree = append(tree, node{depth: 2, label: gPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[gPath]})
 				if m.expanded[gPath] {
-					sortItems(b.global)
-					for _, idx := range b.global {
-						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+					if k == model.KindSession {
+						tree = m.renderSessionLeaves(b.global, gPath, 3, tree)
+					} else {
+						sortItems(b.global)
+						for _, idx := range b.global {
+							tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+						}
 					}
 				}
 			}
@@ -1336,41 +1377,45 @@ func (m *Model) rebuildTree() {
 				lPath := kPath + "/Local"
 				tree = append(tree, node{depth: 2, label: lPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[lPath]})
 				if m.expanded[lPath] {
-					sortItems(b.local)
-					if m.allLocal && m.allLocalModeB {
-						// Mode B: bucket Local items by their project dir
-						// (Item.Meta["project"]) and render one collapsible
-						// subgroup per project, with the items underneath.
-						byProject := map[string][]int{}
-						projectOrder := []string{}
-						for _, idx := range b.local {
-							pdir := m.items[idx].Meta["project"]
-							if pdir == "" {
-								pdir = m.projectDir
+					if k == model.KindSession {
+						tree = m.renderSessionLeaves(b.local, lPath, 3, tree)
+					} else {
+						sortItems(b.local)
+						if m.allLocal && m.allLocalModeB {
+							// Mode B: bucket Local items by their project dir
+							// (Item.Meta["project"]) and render one collapsible
+							// subgroup per project, with the items underneath.
+							byProject := map[string][]int{}
+							projectOrder := []string{}
+							for _, idx := range b.local {
+								pdir := m.items[idx].Meta["project"]
+								if pdir == "" {
+									pdir = m.projectDir
+								}
+								if _, seen := byProject[pdir]; !seen {
+									projectOrder = append(projectOrder, pdir)
+								}
+								byProject[pdir] = append(byProject[pdir], idx)
 							}
-							if _, seen := byProject[pdir]; !seen {
-								projectOrder = append(projectOrder, pdir)
-							}
-							byProject[pdir] = append(byProject[pdir], idx)
-						}
-						sort.Strings(projectOrder)
-						for _, pdir := range projectOrder {
-							pPath := lPath + "/" + pdir
-							label := filepath.Base(pdir)
-							if pdir == m.projectDir {
-								label += " (cwd)"
-							}
-							tree = append(tree, node{depth: 3, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
-							tree[len(tree)-1].labelOverride(label)
-							if m.expanded[pPath] {
-								for _, idx := range byProject[pdir] {
-									tree = append(tree, node{depth: 4, label: m.items[idx].Name, itemIdx: idx})
+							sort.Strings(projectOrder)
+							for _, pdir := range projectOrder {
+								pPath := lPath + "/" + pdir
+								label := filepath.Base(pdir)
+								if pdir == m.projectDir {
+									label += " (cwd)"
+								}
+								tree = append(tree, node{depth: 3, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
+								tree[len(tree)-1].labelOverride(label)
+								if m.expanded[pPath] {
+									for _, idx := range byProject[pdir] {
+										tree = append(tree, node{depth: 4, label: m.items[idx].Name, itemIdx: idx})
+									}
 								}
 							}
-						}
-					} else {
-						for _, idx := range b.local {
-							tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+						} else {
+							for _, idx := range b.local {
+								tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+							}
 						}
 					}
 				}
@@ -1395,9 +1440,13 @@ func (m *Model) rebuildTree() {
 				pPath := kPath + "/Private"
 				tree = append(tree, node{depth: 2, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
 				if m.expanded[pPath] {
-					sortItems(b.private)
-					for _, idx := range b.private {
-						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+					if k == model.KindSession {
+						tree = m.renderSessionLeaves(b.private, pPath, 3, tree)
+					} else {
+						sortItems(b.private)
+						for _, idx := range b.private {
+							tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+						}
 					}
 				}
 			}
@@ -1421,6 +1470,118 @@ func (m *Model) rebuildTree() {
 				break
 			}
 		}
+	}
+}
+
+// renderSessionLeaves emits a hierarchical Sessions sub-tree under
+// parentPath: <parentPath>/<project>/<date-bucket>/<leaf>. Project is
+// taken from Item.Meta["project"] (falling back to "(no project)"),
+// date bucket from Item.Meta["lastUpdated"]. Empty buckets are
+// dropped so a project with one chat today doesn't render four
+// (Today / Yesterday / This week / Older) collapsible nodes for the
+// same leaf. PRI-70.
+func (m *Model) renderSessionLeaves(idxs []int, parentPath string, baseDepth int, tree []node) []node {
+	if len(idxs) == 0 {
+		return tree
+	}
+	type slot struct {
+		items map[string][]int
+	}
+	byProject := map[string]*slot{}
+	var projectOrder []string
+	for _, idx := range idxs {
+		proj := m.items[idx].Meta["project"]
+		if proj == "" {
+			proj = "(no project)"
+		}
+		s := byProject[proj]
+		if s == nil {
+			s = &slot{items: map[string][]int{}}
+			byProject[proj] = s
+			projectOrder = append(projectOrder, proj)
+		}
+		bucket := dateBucket(m.items[idx].Meta["lastUpdated"], time.Now())
+		s.items[bucket] = append(s.items[bucket], idx)
+	}
+	// Stable, predictable order: cwd-project first if it surfaced
+	// (matches user expectation that "this project" sits at the top),
+	// then everything else alphabetically.
+	cwdProjectName := ""
+	if m.projectDir != "" {
+		cwdProjectName = filepath.Base(m.projectDir)
+	}
+	sort.SliceStable(projectOrder, func(i, j int) bool {
+		if projectOrder[i] == cwdProjectName {
+			return true
+		}
+		if projectOrder[j] == cwdProjectName {
+			return false
+		}
+		return projectOrder[i] < projectOrder[j]
+	})
+
+	bucketOrder := []string{"Today", "Yesterday", "This week", "Older"}
+	for _, proj := range projectOrder {
+		projPath := parentPath + "/" + proj
+		tree = append(tree, node{depth: baseDepth, label: projPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[projPath]})
+		tree[len(tree)-1].labelOverride(proj)
+		if !m.expanded[projPath] {
+			continue
+		}
+		slots := byProject[proj]
+		for _, bucket := range bucketOrder {
+			list := slots.items[bucket]
+			if len(list) == 0 {
+				continue
+			}
+			bPath := projPath + "/" + bucket
+			tree = append(tree, node{depth: baseDepth + 1, label: bPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[bPath]})
+			tree[len(tree)-1].labelOverride(bucket)
+			if !m.expanded[bPath] {
+				continue
+			}
+			sort.SliceStable(list, func(i, j int) bool {
+				return m.items[list[i]].Meta["lastUpdated"] > m.items[list[j]].Meta["lastUpdated"]
+			})
+			for _, idx := range list {
+				tree = append(tree, node{depth: baseDepth + 2, label: m.items[idx].Name, itemIdx: idx})
+			}
+		}
+	}
+	return tree
+}
+
+// dateBucket classifies an RFC3339 timestamp into one of the four
+// bins the Sessions tree groups by. Boundaries are local-TZ calendar
+// cuts: today is "from local 00:00 onward", yesterday is the previous
+// 24-hour calendar day, "This week" covers the 5 days before that,
+// everything earlier (or unparseable) is "Older". Now is taken as a
+// parameter so tests can pin specific boundaries deterministically.
+func dateBucket(ts string, now time.Time) string {
+	if ts == "" {
+		return "Older"
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return "Older"
+	}
+	tLocal := t.Local()
+	nowLocal := now.Local()
+	year, month, day := nowLocal.Date()
+	todayStart := time.Date(year, month, day, 0, 0, 0, 0, nowLocal.Location())
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	// "This week" covers the 5 calendar days before yesterday (i.e.
+	// 2..6 days ago). Day 7 ago and earlier falls through to "Older".
+	weekStart := todayStart.AddDate(0, 0, -6)
+	switch {
+	case !tLocal.Before(todayStart):
+		return "Today"
+	case !tLocal.Before(yesterdayStart):
+		return "Yesterday"
+	case !tLocal.Before(weekStart):
+		return "This week"
+	default:
+		return "Older"
 	}
 }
 
@@ -1548,6 +1709,7 @@ func helpText() string {
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
+		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
 		"  e        open in $EDITOR (external)\n" +
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +

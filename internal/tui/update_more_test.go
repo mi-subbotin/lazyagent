@@ -139,11 +139,188 @@ func TestQuitReturnsCmd(t *testing.T) {
 }
 
 func TestPrivateSessionsToggleH(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	m := newTestModel(t, fixtureItems(), "")
 	before := m.hidePrivateSessions
 	m = feed(t, m, "H")
 	if m.hidePrivateSessions == before {
 		t.Error("H should toggle hidePrivateSessions")
+	}
+}
+
+// PRI-70: dateBucket pins the calendar-day boundaries used for the
+// Sessions sub-grouping. Boundaries are local-TZ midnight cuts:
+// "Today" includes anything from local 00:00 onward, "Yesterday" the
+// previous calendar day, "This week" the 5 calendar days before that,
+// "Older" everything earlier or unparseable.
+func TestDateBucketBoundaries(t *testing.T) {
+	// Pin "now" in time.Local so the day/week boundaries the function
+	// computes line up with the test's expected day-buckets regardless
+	// of the host machine's TZ.
+	now := time.Date(2026, 5, 1, 14, 30, 0, 0, time.Local)
+	cases := []struct {
+		name string
+		ts   time.Time
+		want string
+	}{
+		{"now", now, "Today"},
+		{"local midnight today", time.Date(2026, 5, 1, 0, 0, 0, 0, time.Local), "Today"},
+		{"one minute before midnight", time.Date(2026, 4, 30, 23, 59, 0, 0, time.Local), "Yesterday"},
+		{"yesterday morning", time.Date(2026, 4, 30, 9, 0, 0, 0, time.Local), "Yesterday"},
+		{"two days ago", time.Date(2026, 4, 29, 12, 0, 0, 0, time.Local), "This week"},
+		{"6 days ago", time.Date(2026, 4, 25, 12, 0, 0, 0, time.Local), "This week"},
+		{"7 days ago", time.Date(2026, 4, 24, 12, 0, 0, 0, time.Local), "Older"},
+		{"a month ago", time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local), "Older"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dateBucket(tc.ts.Format(time.RFC3339), now)
+			if got != tc.want {
+				t.Errorf("dateBucket(%s) = %q, want %q", tc.ts, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDateBucketEmptyOrInvalid(t *testing.T) {
+	now := time.Now()
+	if got := dateBucket("", now); got != "Older" {
+		t.Errorf("empty timestamp should bucket to Older, got %q", got)
+	}
+	if got := dateBucket("not-a-timestamp", now); got != "Older" {
+		t.Errorf("invalid timestamp should bucket to Older, got %q", got)
+	}
+}
+
+// PRI-70: sessions split into <project>/<date-bucket> sub-groups.
+// Two projects with mixed-age chats should produce 4 project sub-
+// groups (myapp, other) and within each only the buckets that have
+// items — empty buckets are dropped.
+func TestRenderSessionLeavesGroupsByProjectAndBucket(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	now := time.Now().UTC()
+	rfc := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Storage: model.StorageFile,
+			Name: "myapp today", Path: "/tmp/a.jsonl",
+			Meta: map[string]string{"project": "myapp", "lastUpdated": rfc(-1 * time.Hour)}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Storage: model.StorageFile,
+			Name: "myapp yesterday", Path: "/tmp/b.jsonl",
+			Meta: map[string]string{"project": "myapp", "lastUpdated": rfc(-26 * time.Hour)}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Storage: model.StorageFile,
+			Name: "other today", Path: "/tmp/c.jsonl",
+			Meta: map[string]string{"project": "other", "lastUpdated": rfc(-30 * time.Minute)}},
+	}
+	m := newTestModel(t, items, "")
+	m.expanded["Claude"] = true
+	m.expanded["Claude/Sessions"] = true
+	m.expanded["Claude/Sessions/Global"] = true
+	m.expanded["Claude/Sessions/Global/myapp"] = true
+	m.expanded["Claude/Sessions/Global/myapp/Today"] = true
+	m.expanded["Claude/Sessions/Global/myapp/Yesterday"] = true
+	m.expanded["Claude/Sessions/Global/other"] = true
+	m.expanded["Claude/Sessions/Global/other/Today"] = true
+	m.rebuildTree()
+
+	// Group labels we expect in the tree.
+	wantGroups := map[string]bool{
+		"Claude/Sessions/Global/myapp":           false,
+		"Claude/Sessions/Global/myapp/Today":     false,
+		"Claude/Sessions/Global/myapp/Yesterday": false,
+		"Claude/Sessions/Global/other":           false,
+		"Claude/Sessions/Global/other/Today":     false,
+	}
+	for _, n := range m.tree {
+		if n.isGroup {
+			if _, ok := wantGroups[n.label]; ok {
+				wantGroups[n.label] = true
+			}
+		}
+	}
+	for label, seen := range wantGroups {
+		if !seen {
+			t.Errorf("expected group %q in tree; tree:\n%s", label, treeDump(m))
+		}
+	}
+	// Empty bucket should NOT appear: there is no This-week or Older
+	// item for either project.
+	for _, n := range m.tree {
+		if n.isGroup && (strings.HasSuffix(n.label, "/This week") || strings.HasSuffix(n.label, "/Older")) {
+			t.Errorf("empty bucket should be skipped, got %q", n.label)
+		}
+	}
+}
+
+// PRI-70: an Item with Agent=true must be filtered out of the tree
+// by default, and `G` toggles it back in. The fixture seeds one
+// regular session and one subagent transcript; only the regular one
+// should appear initially. After G, both should appear.
+func TestAgentSessionsHiddenByDefaultAndToggleG(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	items := []model.Item{
+		{
+			Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal,
+			Name: "regular chat", Path: "/tmp/regular.jsonl", Storage: model.StorageFile,
+			Meta: map[string]string{"lastUpdated": time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")},
+		},
+		{
+			Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal,
+			Name: "task spawn", Path: "/tmp/parent/subagents/agent-x.jsonl", Storage: model.StorageFile,
+			Agent: true,
+			Meta:  map[string]string{"lastUpdated": time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")},
+		},
+	}
+	m := newTestModel(t, items, "")
+	// Expand every group so leaves surface in the visible tree.
+	m.expanded["Claude"] = true
+	m.expanded["Claude/Sessions"] = true
+	m.expanded["Claude/Sessions/Global"] = true
+	// PRI-70 sub-grouping: <Sessions/Global>/<project>/<date-bucket>.
+	m.expanded["Claude/Sessions/Global/(no project)"] = true
+	m.expanded["Claude/Sessions/Global/(no project)/Today"] = true
+	m.rebuildTree()
+
+	visibleNames := func() []string {
+		var out []string
+		for _, n := range m.tree {
+			if !n.isGroup && !n.isEmpty {
+				out = append(out, m.items[n.itemIdx].Name)
+			}
+		}
+		return out
+	}
+
+	got := visibleNames()
+	if len(got) != 1 || got[0] != "regular chat" {
+		t.Errorf("default tree should contain only the regular chat; got %v", got)
+	}
+
+	m = feed(t, m, "G")
+	if !m.showAgentSessions {
+		t.Fatal("G should flip showAgentSessions on")
+	}
+	got = visibleNames()
+	hasRegular := false
+	hasAgent := false
+	for _, n := range got {
+		if n == "regular chat" {
+			hasRegular = true
+		}
+		if n == "task spawn" {
+			hasAgent = true
+		}
+	}
+	if !hasRegular || !hasAgent {
+		t.Errorf("after G, both sessions should be visible; got %v", got)
+	}
+
+	m = feed(t, m, "G")
+	if m.showAgentSessions {
+		t.Fatal("second G should flip showAgentSessions back off")
+	}
+	got = visibleNames()
+	if len(got) != 1 || got[0] != "regular chat" {
+		t.Errorf("after second G, agent should be hidden again; got %v", got)
 	}
 }
 

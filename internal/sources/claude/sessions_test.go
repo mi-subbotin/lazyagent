@@ -158,3 +158,75 @@ func TestScanSessionsClassifiesBuckets(t *testing.T) {
 		}
 	}
 }
+
+// PRI-70: subagent (Task-tool spawn) transcripts live at
+// `<encoded>/<sessionId>/subagents/agent-*.jsonl`. They must surface
+// as KindSession items but with Agent=true so the TUI can hide them
+// by default. The parent session at the top level stays Agent=false.
+func TestScanSessionsTagsSubagentTranscripts(t *testing.T) {
+	home := t.TempDir()
+	encoded := filepath.Join(home, ".claude", "projects", "-Users-testfake-Projects-myapp")
+	if err := os.MkdirAll(encoded, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parentID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	parentBody := `{"type":"user","cwd":"/Users/testfake/Projects/myapp","message":{"role":"user","content":"plan the refactor"},"sessionId":"` + parentID + `","isSidechain":false}` + "\n"
+	if err := os.WriteFile(filepath.Join(encoded, parentID+".jsonl"), []byte(parentBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	subDir := filepath.Join(encoded, parentID, "subagents")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentBody := `{"type":"user","cwd":"/Users/testfake/Projects/myapp","message":{"role":"user","content":"You are a code reviewer..."},"sessionId":"` + parentID + `","isSidechain":true,"agentId":"abcd123"}` + "\n"
+	if err := os.WriteFile(filepath.Join(subDir, "agent-abcd123.jsonl"), []byte(agentBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := scanSessions(filepath.Join(home, ".claude"), "")
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2 (parent + subagent)", len(items))
+	}
+	var parentAgent, subAgent *model.Item
+	for i := range items {
+		if strings.Contains(items[i].Path, "/subagents/") {
+			subAgent = &items[i]
+		} else {
+			parentAgent = &items[i]
+		}
+	}
+	if parentAgent == nil || subAgent == nil {
+		t.Fatalf("missing parent or subagent: %+v", items)
+	}
+	if parentAgent.Agent {
+		t.Errorf("top-level session should not be tagged Agent")
+	}
+	if !subAgent.Agent {
+		t.Errorf("subagent transcript should be tagged Agent=true; got %+v", subAgent)
+	}
+}
+
+// Defence-in-depth: a top-level transcript whose first record carries
+// `isSidechain: true` (e.g. format drift in a future Claude release)
+// must still be flagged Agent — the path check fails but content
+// detection picks it up.
+func TestScanSessionsTagsAgentByContent(t *testing.T) {
+	home := t.TempDir()
+	encoded := filepath.Join(home, ".claude", "projects", "-Users-testfake-x")
+	if err := os.MkdirAll(encoded, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	body := `{"type":"user","cwd":"/Users/testfake/x","message":{"role":"user","content":"agent ping"},"sessionId":"` + sid + `","isSidechain":true}` + "\n"
+	if err := os.WriteFile(filepath.Join(encoded, sid+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := scanSessions(filepath.Join(home, ".claude"), "")
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if !items[0].Agent {
+		t.Errorf("expected Agent=true via isSidechain content fallback; got %+v", items[0])
+	}
+}
