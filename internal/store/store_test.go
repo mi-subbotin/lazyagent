@@ -69,7 +69,14 @@ func TestItemDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ItemDir: %v", err)
 	}
-	want := filepath.Join(tmp, "skills", "echo")
+	// Root() resolves symlinks (macOS /var → /private/var), so do the
+	// same to the expected value before comparing or this test fails on
+	// CI runners whose TempDir lives behind a symlink.
+	resolvedTmp, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	want := filepath.Join(resolvedTmp, "skills", "echo")
 	if got != want {
 		t.Errorf("ItemDir = %q, want %q", got, want)
 	}
