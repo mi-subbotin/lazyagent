@@ -14,10 +14,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mi-subbotin/lazyagent/internal/actions"
 	"github.com/mi-subbotin/lazyagent/internal/config"
 	"github.com/mi-subbotin/lazyagent/internal/index"
 	"github.com/mi-subbotin/lazyagent/internal/install"
 	"github.com/mi-subbotin/lazyagent/internal/logging"
+	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/sources/claude"
 	"github.com/mi-subbotin/lazyagent/internal/sources/codex"
@@ -446,11 +448,11 @@ func loadConfigOrWarn() *config.Config {
 	return cfg
 }
 
-// runSharedSubcommand dispatches `lazyagent shared <verb>`. Today only
-// `init` exists; future verbs (sync, status, push, pull) plug in here.
+// runSharedSubcommand dispatches `lazyagent shared <verb>`. Today
+// `init` and `sync` exist; future verbs (status, push, pull) plug in here.
 func runSharedSubcommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lazyagent shared <init>")
+		return fmt.Errorf("usage: lazyagent shared <init|sync> [flags]")
 	}
 	switch args[0] {
 	case "init":
@@ -460,8 +462,97 @@ func runSharedSubcommand(args []string) error {
 		root, _ := store.Root()
 		fmt.Printf("lazyagent shared store initialised at %s\n", root)
 		return nil
+	case "sync":
+		return runSharedSyncCommand(args[1:])
 	default:
-		return fmt.Errorf("unknown shared subcommand %q (try: init)", args[0])
+		return fmt.Errorf("unknown shared subcommand %q (try: init, sync)", args[0])
+	}
+}
+
+// runSharedSyncCommand implements `lazyagent shared sync` — the
+// headless equivalent of the eventual TUI `S` keystroke. Builds a
+// Plan from every adapter's items, prints a human-readable preview,
+// and (unless --dry-run) applies it. --yes auto-confirms when the
+// plan would clobber unrelated content; without --yes a conflict
+// returns an error so a script can re-run with the flag.
+func runSharedSyncCommand(args []string) error {
+	fs := flag.NewFlagSet("shared sync", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "preview the plan without mutating anything")
+	yes := fs.Bool("yes", false, "auto-overwrite conflicting target paths")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := store.Init(); err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	projectDir := detectProject(cwd)
+
+	srcs := []sources.Source{claude.Source{}, codex.Source{}, gemini.Source{}, lazyagent.Source{}}
+	ctx := context.Background()
+	var allItems []model.Item
+	for _, s := range srcs {
+		items, err := s.List(ctx, projectDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s list failed: %v\n", s.Name(), err)
+			continue
+		}
+		allItems = append(allItems, items...)
+	}
+
+	plan := actions.SyncAll(allItems)
+	printSyncPlan(plan)
+
+	if *dryRun {
+		return nil
+	}
+	if !plan.Mutating() {
+		fmt.Println("\nNothing to do.")
+		return nil
+	}
+
+	errs := actions.ApplyPlan(plan, *yes)
+	if len(errs) == 0 {
+		fmt.Println("\nSync complete.")
+		return nil
+	}
+	if actions.IsSyncConflict(errs) && !*yes {
+		fmt.Fprintln(os.Stderr, "\nSome targets had unrelated content. Re-run with --yes to overwrite.")
+	}
+	for _, e := range errs {
+		fmt.Fprintln(os.Stderr, "  ✗", e)
+	}
+	return fmt.Errorf("%d sync error(s)", len(errs))
+}
+
+// printSyncPlan renders a one-line header + table of ops to stdout.
+func printSyncPlan(plan actions.Plan) {
+	counts := plan.Counts()
+	fmt.Printf("Plan: %d import · %d project · %d resync · %d skip\n",
+		counts[actions.ActionImport],
+		counts[actions.ActionProject],
+		counts[actions.ActionResync],
+		counts[actions.ActionSkip])
+	for _, op := range plan.Ops {
+		marker := "·"
+		switch op.Action {
+		case actions.ActionImport:
+			marker = "+"
+		case actions.ActionProject:
+			marker = "→"
+		case actions.ActionResync:
+			marker = "↻"
+		}
+		line := fmt.Sprintf("  %s %s %-7s %s", marker, op.Action, op.Item.Kind.String(), op.Item.Name)
+		if op.Reason != "" {
+			line += "  (" + op.Reason + ")"
+		}
+		fmt.Println(line)
 	}
 }
 
