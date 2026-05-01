@@ -131,6 +131,12 @@ type Model struct {
 	// users; same planner / executor underneath. PRI-64.
 	syncing *syncOverlay
 
+	// fixing is non-nil while the bulk-fix overlay is open (key `F`).
+	// Mirrors `syncing` but iterates over actions.Fix instead of
+	// actions.SyncAll: every item with `ParseError != ""` is enrolled,
+	// each gets a precomputed FixPlan or an unfixable reason. PRI-73.
+	fixing *fixOverlay
+
 	// resyncPicker is non-nil while the drift-resolution overlay is
 	// open. Single keypress (c/t/esc) decides which side wins.
 	resyncPicker *resyncPicker
@@ -561,6 +567,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSyncOverlay(msg)
 		}
 
+		// Bulk-fix overlay (`F`): list of every invalid item with its
+		// computed FixPlan; y applies the fixable subset. PRI-73.
+		if m.fixing != nil {
+			return m.updateFixOverlay(msg)
+		}
+
 		// Resync picker: c/t/esc.
 		if m.resyncPicker != nil {
 			return m.updateResyncPicker(msg)
@@ -658,7 +670,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pending = &pendingOp{kind: pendDelete, item: it}
 			}
 			return m, nil
-		case "F":
+		case "f":
 			// PRI-73: deterministic auto-fix for items the validators
 			// flagged as `(invalid)`. We compute the plan up-front so the
 			// confirm overlay can preview the rewritten bytes; the user
@@ -677,6 +689,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = &pendingOp{kind: pendFix, item: it, fix: plan}
+			return m, nil
+		case "F":
+			// PRI-73 Phase B: bulk fix overlay across every invalid item
+			// in the current items slice. Same pattern as `S` (sync-all):
+			// pre-flight every plan, render counts + scrollable list,
+			// `y` applies the fixable subset, post-apply shows a
+			// summary the user closes with esc.
+			ov := newFixOverlay(m.items)
+			if ov == nil {
+				m.setToast("fix-all: no invalid items")
+				return m, nil
+			}
+			m.fixing = ov
 			return m, nil
 		case "p":
 			it, ok := m.currentItem()
@@ -1822,7 +1847,8 @@ func helpText() string {
 		"  esc      clear filter / cancel filter editor / cancel confirm\n" +
 		"  t        toggle JSON / TOML for MCP entries\n" +
 		"  d        delete item (asks y/n)\n" +
-		"  F        auto-fix invalid item (rewrites bad frontmatter / hook entry)\n" +
+		"  f        auto-fix invalid item (rewrites bad frontmatter / hook entry)\n" +
+		"  F        bulk auto-fix every invalid item in the tree\n" +
 		"  p        place item — pick which (Origin × Scope) cells project\n" +
 		"           the item from the library; bytes live once in\n" +
 		"           ~/.lazyagent/library and project back to each chosen cell\n" +
@@ -2087,6 +2113,9 @@ func (m Model) View() string {
 	} else if m.syncing != nil {
 		body = overlay(body, syncOverlayText(*m.syncing),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.fixing != nil {
+		body = overlay(body, fixOverlayText(*m.fixing),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
 	switch {
@@ -2107,6 +2136,12 @@ func (m Model) View() string {
 			statusLine = " sync done · esc close "
 		} else {
 			statusLine = " sync · j/k navigate · y apply · o overwrite-on-conflict · esc cancel "
+		}
+	case m.fixing != nil:
+		if m.fixing.applied {
+			statusLine = " fix done · esc close "
+		} else {
+			statusLine = " fix-all · j/k navigate · y apply fixable · esc cancel "
 		}
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "

@@ -633,23 +633,23 @@ func TestSyncOverlayAllSkippedYIsNoop(t *testing.T) {
 	}
 }
 
-// PRI-73: F on a valid item is a no-op + toast (we should not open a
+// PRI-73: f on a valid item is a no-op + toast (we should not open a
 // confirm overlay for items that have nothing to fix).
 func TestFixKeyOnValidItemTosts(t *testing.T) {
 	m := newTestModel(t, fixtureItems(), "/tmp/proj")
 	m.expanded["Claude/Skills/Global"] = true
 	m.rebuildTree()
 	moveToFirstLeaf(&m)
-	m = feed(t, m, "F")
+	m = feed(t, m, "f")
 	if m.pending != nil {
-		t.Errorf("F on a valid item must not open the confirm overlay")
+		t.Errorf("f on a valid item must not open the confirm overlay")
 	}
 	if !strings.Contains(m.toast, "nothing to fix") {
 		t.Errorf("expected 'nothing to fix' toast, got %q", m.toast)
 	}
 }
 
-// PRI-73: F on an invalid markdown item builds a FixPlan, parks it on
+// PRI-73: f on an invalid markdown item builds a FixPlan, parks it on
 // the pending op, and the confirm overlay can render. Pressing y
 // applies the plan and clears pending.
 func TestFixKeyAppliesPlanOnInvalidItem(t *testing.T) {
@@ -677,9 +677,9 @@ func TestFixKeyAppliesPlanOnInvalidItem(t *testing.T) {
 	m.rebuildTree()
 	moveToFirstLeaf(&m)
 
-	m = feed(t, m, "F")
+	m = feed(t, m, "f")
 	if m.pending == nil {
-		t.Fatalf("F should open the fix-confirm overlay (toast=%q)", m.toast)
+		t.Fatalf("f should open the fix-confirm overlay (toast=%q)", m.toast)
 	}
 	if m.pending.kind != pendFix {
 		t.Fatalf("pending kind should be pendFix, got %v", m.pending.kind)
@@ -698,5 +698,124 @@ func TestFixKeyAppliesPlanOnInvalidItem(t *testing.T) {
 	}
 	if strings.Contains(string(out), "spillover here.\n") && !strings.Contains(string(out), "line one. spillover here.") {
 		t.Errorf("rewrite did not merge spillover:\n%s", out)
+	}
+}
+
+// PRI-73 Phase B: F with no invalid items in the tree should toast and
+// stay closed — opening an empty bulk overlay would be confusing.
+func TestFixOverlayNoInvalidItemsTosts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel(t, fixtureItems(), "")
+	m = feed(t, m, "F")
+	if m.fixing != nil {
+		t.Error("F with no invalid items should not open the overlay")
+	}
+	if !strings.Contains(m.toast, "no invalid items") {
+		t.Errorf("expected 'no invalid items' toast, got %q", m.toast)
+	}
+}
+
+// PRI-73 Phase B: F collects every invalid item, y applies the fixable
+// subset and closes back to result mode showing fixed/total counts.
+// Mixed input: one fixable Skill + one unfixable Hook (empty command).
+func TestFixOverlayBulkAppliesFixableSubset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+
+	// Fixable: skill with multi-line description spillover.
+	skillDir := dir + "/skills/broken"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := skillDir + "/SKILL.md"
+	skillIn := "---\nname: broken\ndescription: line one.\nspillover here.\n---\nbody\n"
+	if err := os.WriteFile(skillPath, []byte(skillIn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unfixable: hook entry with empty command.
+	settings := dir + "/settings.json"
+	hookJSON := `{"hooks":{"PreToolUse":[{"hooks":[{"command":""}]}]}}`
+	if err := os.WriteFile(settings, []byte(hookJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []model.Item{
+		{
+			Origin: model.OriginClaude, Kind: model.KindSkill, Scope: model.ScopeGlobal,
+			Name: "broken", Path: skillPath, Storage: model.StorageDir,
+			ParseError: "spillover",
+		},
+		{
+			Origin: model.OriginClaude, Kind: model.KindHook, Scope: model.ScopeGlobal,
+			Name: "PreToolUse", Path: settings, Storage: model.StorageEntry,
+			ConfigKey:  "hooks/PreToolUse/0/hooks/0",
+			ParseError: "missing or empty command; missing type",
+		},
+	}
+	m := newTestModel(t, items, "")
+
+	m = feed(t, m, "F")
+	if m.fixing == nil {
+		t.Fatalf("F should open bulk overlay (toast=%q)", m.toast)
+	}
+	if len(m.fixing.entries) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(m.fixing.entries))
+	}
+	if countFixable(m.fixing.entries) != 1 {
+		t.Errorf("want 1 fixable, got %d", countFixable(m.fixing.entries))
+	}
+
+	m = feed(t, m, "y")
+	if m.fixing == nil {
+		t.Fatal("after apply the overlay should still be open in result mode")
+	}
+	if !m.fixing.applied {
+		t.Error("applied flag should be set after y")
+	}
+	if m.fixing.fixed != 1 {
+		t.Errorf("want fixed=1, got %d (errs=%v)", m.fixing.fixed, m.fixing.errs)
+	}
+
+	// Verify the skill was actually rewritten on disk.
+	out, _ := os.ReadFile(skillPath)
+	if !strings.Contains(string(out), "line one. spillover here.") {
+		t.Errorf("skill rewrite did not merge spillover:\n%s", out)
+	}
+
+	m = feed(t, m, "esc")
+	if m.fixing != nil {
+		t.Error("esc should close the overlay")
+	}
+}
+
+// PRI-73 Phase B: an overlay where every entry is unfixable should
+// toast on y and close — applying nothing is better than pretending.
+func TestFixOverlayAllUnfixableY(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	settings := dir + "/settings.json"
+	if err := os.WriteFile(settings, []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"command":""}]}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{
+		{
+			Origin: model.OriginClaude, Kind: model.KindHook, Scope: model.ScopeGlobal,
+			Name: "PreToolUse", Path: settings, Storage: model.StorageEntry,
+			ConfigKey:  "hooks/PreToolUse/0/hooks/0",
+			ParseError: "missing or empty command",
+		},
+	}
+	m := newTestModel(t, items, "")
+	m = feed(t, m, "F")
+	if m.fixing == nil {
+		t.Fatal("F should open even when only unfixable entries exist")
+	}
+	m = feed(t, m, "y")
+	if m.fixing != nil {
+		t.Error("y on all-unfixable plan should close the overlay")
+	}
+	if !strings.Contains(m.toast, "unfixable") {
+		t.Errorf("expected unfixable toast, got %q", m.toast)
 	}
 }
