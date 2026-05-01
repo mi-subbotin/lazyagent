@@ -116,3 +116,105 @@ func keys(m map[string]model.Item) []string {
 	sort.Strings(out)
 	return out
 }
+
+// PRI-61: validateHookEntry surfaces malformed entries via Item.ParseError
+// so the TUI shows them as `(invalid)`. Three classes of problem are
+// flagged: missing/empty command, bad timeout, missing type.
+func TestValidateHookEntry(t *testing.T) {
+	cases := []struct {
+		name     string
+		inner    map[string]any
+		wantSubs []string
+	}{
+		{
+			name:     "valid",
+			inner:    map[string]any{"type": "command", "command": "echo hi", "timeout": float64(5)},
+			wantSubs: nil,
+		},
+		{
+			name:     "missing command",
+			inner:    map[string]any{"type": "command"},
+			wantSubs: []string{"missing or empty command"},
+		},
+		{
+			name:     "empty command",
+			inner:    map[string]any{"type": "command", "command": "   "},
+			wantSubs: []string{"missing or empty command"},
+		},
+		{
+			name:     "negative timeout",
+			inner:    map[string]any{"type": "command", "command": "x", "timeout": float64(-1)},
+			wantSubs: []string{"timeout must be > 0"},
+		},
+		{
+			name:     "string timeout",
+			inner:    map[string]any{"type": "command", "command": "x", "timeout": "5s"},
+			wantSubs: []string{"timeout must be a number"},
+		},
+		{
+			name:     "missing type",
+			inner:    map[string]any{"command": "x"},
+			wantSubs: []string{"missing type"},
+		},
+		{
+			name:     "stacked",
+			inner:    map[string]any{},
+			wantSubs: []string{"missing or empty command", "missing type"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateHookEntry(tc.inner)
+			if len(tc.wantSubs) == 0 {
+				if got != "" {
+					t.Errorf("want clean, got %q", got)
+				}
+				return
+			}
+			for _, sub := range tc.wantSubs {
+				if !strings.Contains(got, sub) {
+					t.Errorf("got %q, missing substring %q", got, sub)
+				}
+			}
+		})
+	}
+}
+
+// PRI-61: scanned items carry the validator's verdict on
+// Item.ParseError. A settings.json with one valid + one missing-command
+// hook produces two items with the right ParseError shape.
+func TestScanHooksFile_PopulatesParseError(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	mustWriteFile(t, settings, `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "Bash", "hooks": [
+					{"type": "command", "command": "echo ok"},
+					{"type": "command"}
+				]}
+			]
+		}
+	}`)
+	got := scanHooksFile(settings, model.ScopeGlobal)
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2", len(got))
+	}
+	var clean, broken *model.Item
+	for i := range got {
+		if got[i].Meta["command"] == "echo ok" {
+			clean = &got[i]
+		} else {
+			broken = &got[i]
+		}
+	}
+	if clean == nil || broken == nil {
+		t.Fatalf("missing clean/broken: %+v", got)
+	}
+	if clean.ParseError != "" {
+		t.Errorf("valid hook should have empty ParseError, got %q", clean.ParseError)
+	}
+	if !strings.Contains(broken.ParseError, "command") {
+		t.Errorf("broken hook should flag missing command, got %q", broken.ParseError)
+	}
+}

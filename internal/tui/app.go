@@ -790,8 +790,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			if it.Storage == model.StorageEntry {
-				m.setToast("entries: use 'e' for raw config edit (E support coming)")
+			// Hook entries are openable directly — newEditorState
+			// switches into entry mode for them. Other StorageEntry
+			// kinds still fall through to `e` for now.
+			if it.Storage == model.StorageEntry && it.Kind != model.KindHook {
+				m.setToast("entries: use 'e' for raw config edit (inline E only for hooks)")
 				return m, nil
 			}
 			ed, err := newEditorState(it)
@@ -949,6 +952,18 @@ func (m Model) updateEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+s":
+		if ed.entryMode {
+			if err := ed.saveEntry(); err != nil {
+				m.setToast("save: " + err.Error())
+				return m, nil
+			}
+			path := ed.path
+			m.editing = nil
+			m.setToast("saved " + ed.entryKey)
+			m.invalidateBodyCache(path)
+			m.loading = true
+			return m, m.loadCmd()
+		}
 		err := actions.SaveFile(ed.path, []byte(ed.ta.Value()), ed.openMT)
 		if errors.Is(err, actions.ErrConflict) {
 			ed.conflict = true
@@ -1362,9 +1377,12 @@ func (m *Model) rebuildTree() {
 				gPath := kPath + "/Global"
 				tree = append(tree, node{depth: 2, label: gPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[gPath]})
 				if m.expanded[gPath] {
-					if k == model.KindSession {
+					switch k {
+					case model.KindSession:
 						tree = m.renderSessionLeaves(b.global, gPath, 3, tree)
-					} else {
+					case model.KindHook:
+						tree = m.renderHookLeaves(b.global, gPath, 3, tree)
+					default:
 						sortItems(b.global)
 						for _, idx := range b.global {
 							tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
@@ -1379,6 +1397,8 @@ func (m *Model) rebuildTree() {
 				if m.expanded[lPath] {
 					if k == model.KindSession {
 						tree = m.renderSessionLeaves(b.local, lPath, 3, tree)
+					} else if k == model.KindHook {
+						tree = m.renderHookLeaves(b.local, lPath, 3, tree)
 					} else {
 						sortItems(b.local)
 						if m.allLocal && m.allLocalModeB {
@@ -1546,6 +1566,54 @@ func (m *Model) renderSessionLeaves(idxs []int, parentPath string, baseDepth int
 			for _, idx := range list {
 				tree = append(tree, node{depth: baseDepth + 2, label: m.items[idx].Name, itemIdx: idx})
 			}
+		}
+	}
+	return tree
+}
+
+// renderHookLeaves renders hook items grouped by Meta["event"]
+// (PreToolUse / PostToolUse / SessionStart / ...). Each event is its
+// own collapsible subgroup; events open by default so the user sees
+// the hooks immediately on first paint. Hooks without an event meta
+// fall through to a "(no event)" bucket — defensive: should not happen
+// in practice but keeps malformed config from disappearing silently.
+func (m *Model) renderHookLeaves(idxs []int, parentPath string, baseDepth int, tree []node) []node {
+	if len(idxs) == 0 {
+		return tree
+	}
+	byEvent := map[string][]int{}
+	var eventOrder []string
+	for _, idx := range idxs {
+		ev := m.items[idx].Meta["event"]
+		if ev == "" {
+			ev = "(no event)"
+		}
+		if _, seen := byEvent[ev]; !seen {
+			eventOrder = append(eventOrder, ev)
+		}
+		byEvent[ev] = append(byEvent[ev], idx)
+	}
+	sort.Strings(eventOrder)
+	for _, ev := range eventOrder {
+		evPath := parentPath + "/" + ev
+		// Default-open: events not yet present in m.expanded count as
+		// open. The session/local subgroups follow the opposite
+		// convention (default-collapsed) — hooks are usually a short
+		// list, so showing them by default beats hiding them.
+		if _, set := m.expanded[evPath]; !set {
+			m.expanded[evPath] = true
+		}
+		tree = append(tree, node{depth: baseDepth, label: evPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[evPath]})
+		tree[len(tree)-1].labelOverride(ev)
+		if !m.expanded[evPath] {
+			continue
+		}
+		list := byEvent[ev]
+		sort.SliceStable(list, func(i, j int) bool {
+			return m.items[list[i]].Name < m.items[list[j]].Name
+		})
+		for _, idx := range list {
+			tree = append(tree, node{depth: baseDepth + 1, label: m.items[idx].Name, itemIdx: idx})
 		}
 	}
 	return tree

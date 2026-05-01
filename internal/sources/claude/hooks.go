@@ -100,6 +100,7 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 					RawTOML:     parse.MCPToTOML(inner),
 					Storage:     model.StorageEntry,
 					ConfigKey:   configKey,
+					ParseError:  validateHookEntry(inner),
 					Meta: map[string]string{
 						"event":   event,
 						"matcher": matcher,
@@ -110,6 +111,45 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 		}
 	}
 	return out
+}
+
+// validateHookEntry returns a non-empty string when the inner hook
+// map looks malformed enough that running it would either crash the
+// shell or silently no-op. The TUI surfaces this as the `(invalid)`
+// marker next to the item via Item.ParseError. v1 checks (PRI-61):
+//
+//   - empty or missing `command` (nothing to run);
+//   - `timeout` present but not a positive number (string, negative,
+//     non-numeric — the engine ignores or rejects these inconsistently
+//     across releases, so we flag any of them);
+//   - `type` missing entirely — Claude requires "type": "command" today
+//     and silently ignores entries without it.
+//
+// Multiple problems collapse into one string; the user gets enough to
+// know what to fix and the detail panel still renders the raw JSON.
+func validateHookEntry(inner map[string]any) string {
+	var problems []string
+	if cmd, ok := inner["command"].(string); !ok || strings.TrimSpace(cmd) == "" {
+		problems = append(problems, "missing or empty command")
+	}
+	if v, ok := inner["timeout"]; ok {
+		switch t := v.(type) {
+		case float64:
+			if t <= 0 {
+				problems = append(problems, "timeout must be > 0")
+			}
+		case int:
+			if t <= 0 {
+				problems = append(problems, "timeout must be > 0")
+			}
+		default:
+			problems = append(problems, "timeout must be a number")
+		}
+	}
+	if t, ok := inner["type"].(string); !ok || strings.TrimSpace(t) == "" {
+		problems = append(problems, "missing type")
+	}
+	return strings.Join(problems, "; ")
 }
 
 // hookDescription returns a single-line summary of the command so the

@@ -79,6 +79,7 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 					RawTOML:     parse.MCPToTOML(inner),
 					Storage:     model.StorageEntry,
 					ConfigKey:   configKey,
+					ParseError:  validateHookEntry(inner),
 					Meta: map[string]string{
 						"event":   event,
 						"matcher": matcher,
@@ -89,6 +90,36 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 		}
 	}
 	return out
+}
+
+// validateHookEntry mirrors the Claude adapter's validator (PRI-61):
+// flags missing/empty command, invalid timeout, and missing type. Lives
+// here as a copy rather than a shared helper because Gemini may evolve
+// its on-disk shape independently and we want each adapter to own its
+// own checks.
+func validateHookEntry(inner map[string]any) string {
+	var problems []string
+	if cmd, ok := inner["command"].(string); !ok || strings.TrimSpace(cmd) == "" {
+		problems = append(problems, "missing or empty command")
+	}
+	if v, ok := inner["timeout"]; ok {
+		switch t := v.(type) {
+		case float64:
+			if t <= 0 {
+				problems = append(problems, "timeout must be > 0")
+			}
+		case int:
+			if t <= 0 {
+				problems = append(problems, "timeout must be > 0")
+			}
+		default:
+			problems = append(problems, "timeout must be a number")
+		}
+	}
+	if t, ok := inner["type"].(string); !ok || strings.TrimSpace(t) == "" {
+		problems = append(problems, "missing type")
+	}
+	return strings.Join(problems, "; ")
 }
 
 func hookDescription(command string) string {

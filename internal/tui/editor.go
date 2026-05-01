@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,18 +10,30 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 )
 
 // editorState owns the bubbles textarea and the metadata the save flow
 // needs (open-time mtime for conflict detection, original bytes for
 // dirty tracking, and a conflict flag that triggers the resolution
 // overlay).
+//
+// PRI-61: when the item is a Hook entry the editor opens the inner-hook
+// JSON map only — not the whole settings.json — so users edit just the
+// command/timeout/type/etc fields they care about. Save parses the
+// buffer back to JSON and routes through parse.WriteEntry instead of
+// SaveFile.
 type editorState struct {
 	item    model.Item
 	path    string
 	ta      textarea.Model
 	openMT  time.Time
 	initial string
+
+	// entryMode is set for StorageEntry items (currently only Hook).
+	// entryKey carries the slash-joined ConfigKey used by parse.WriteEntry.
+	entryMode bool
+	entryKey  string
 
 	// conflict is set when SaveFile returned ErrConflict; the next
 	// keystroke is interpreted by the conflict-resolution branch
@@ -31,7 +44,15 @@ type editorState struct {
 // newEditorState reads the file at it.Path into a textarea ready to
 // edit. Returns an error if the file can't be read or stat'd. The
 // caller should call resize once the terminal dimensions are known.
+//
+// For Hook entries the buffer holds the inner-hook map's JSON instead
+// of the full settings.json — fewer characters to skim, no risk of
+// breaking unrelated hooks. Other StorageEntry kinds still fall through
+// to the file-mode editor (via 'e') for now.
 func newEditorState(it model.Item) (*editorState, error) {
+	if it.Kind == model.KindHook && it.Storage == model.StorageEntry {
+		return newHookEntryEditor(it)
+	}
 	data, err := os.ReadFile(it.Path)
 	if err != nil {
 		return nil, err
@@ -56,6 +77,55 @@ func newEditorState(it model.Item) (*editorState, error) {
 		openMT:  mt,
 		initial: string(data),
 	}, nil
+}
+
+// newHookEntryEditor opens the editor in entry mode: the buffer is the
+// JSON-encoded inner-hook map at ConfigKey, not the surrounding
+// settings.json. Save will parse the buffer back to JSON and call
+// parse.WriteEntry; mtime tracking still uses the underlying file so
+// concurrent edits to other hooks in the same file get caught.
+func newHookEntryEditor(it model.Item) (*editorState, error) {
+	val, _, err := parse.ReadEntry(it.Path, it.ConfigKey)
+	if err != nil {
+		return nil, err
+	}
+	pretty, err := json.MarshalIndent(val, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	mt, err := actionsFileMtime(it.Path)
+	if err != nil {
+		return nil, err
+	}
+	body := string(pretty) + "\n"
+
+	ta := textarea.New()
+	ta.SetValue(body)
+	ta.ShowLineNumbers = true
+	ta.Focus()
+	ta.CursorStart()
+
+	return &editorState{
+		item:      it,
+		path:      it.Path,
+		ta:        ta,
+		openMT:    mt,
+		initial:   body,
+		entryMode: true,
+		entryKey:  it.ConfigKey,
+	}, nil
+}
+
+// saveEntry parses the textarea buffer as JSON and writes the result
+// back at entryKey via parse.WriteEntry. Returns a clear error string
+// when the buffer is not valid JSON (rendered as a toast — the user
+// keeps editing and tries again).
+func (e *editorState) saveEntry() error {
+	var v any
+	if err := json.Unmarshal([]byte(e.ta.Value()), &v); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	return parse.WriteEntry(e.path, e.entryKey, v)
 }
 
 // dirty reports whether the buffer differs from what we read at open.

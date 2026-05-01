@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -477,4 +478,104 @@ func treeDump(m Model) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// PRI-61: Hooks render under Origin/Hooks/<event>/<name>. Two hooks on
+// different events should produce two event sub-groups; events stay
+// expanded by default so the leaves are visible without an extra key.
+func TestRenderHookLeavesGroupsByEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindHook, Scope: model.ScopeGlobal,
+			Name: "PreToolUse:Bash", Path: "/tmp/settings.json", Storage: model.StorageEntry,
+			ConfigKey: "hooks/PreToolUse/0/hooks/0",
+			Meta:      map[string]string{"event": "PreToolUse", "matcher": "Bash"}},
+		{Origin: model.OriginClaude, Kind: model.KindHook, Scope: model.ScopeGlobal,
+			Name: "PostToolUse", Path: "/tmp/settings.json", Storage: model.StorageEntry,
+			ConfigKey: "hooks/PostToolUse/0/hooks/0",
+			Meta:      map[string]string{"event": "PostToolUse"}},
+	}
+	m := newTestModel(t, items, "")
+	m.expanded["Claude"] = true
+	m.expanded["Claude/Hooks"] = true
+	m.expanded["Claude/Hooks/Global"] = true
+	m.rebuildTree()
+
+	wantGroups := map[string]bool{
+		"Claude/Hooks/Global/PreToolUse":  false,
+		"Claude/Hooks/Global/PostToolUse": false,
+	}
+	wantLeaves := map[string]bool{
+		"PreToolUse:Bash": false,
+		"PostToolUse":     false,
+	}
+	for _, n := range m.tree {
+		if n.isGroup {
+			if _, ok := wantGroups[n.label]; ok {
+				wantGroups[n.label] = true
+			}
+		} else if _, ok := wantLeaves[n.label]; ok {
+			wantLeaves[n.label] = true
+		}
+	}
+	for label, seen := range wantGroups {
+		if !seen {
+			t.Errorf("missing group %q in tree:\n%s", label, treeDump(m))
+		}
+	}
+	for label, seen := range wantLeaves {
+		if !seen {
+			t.Errorf("missing hook leaf %q in tree:\n%s", label, treeDump(m))
+		}
+	}
+}
+
+// PRI-61: pressing E on a Hook entry opens the editor in entry mode —
+// buffer is the inner-hook JSON, not the whole settings.json. Saving
+// parses the JSON back and writes via parse.WriteEntry; the rest of
+// settings.json must survive untouched.
+func TestEditorEntryModeOnHookSavesViaWriteEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	settings := dir + "/settings.json"
+	body := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo old","timeout":5}]}]},"keep":"this"}`
+	if err := os.WriteFile(settings, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := model.Item{
+		Origin: model.OriginClaude, Kind: model.KindHook, Scope: model.ScopeGlobal,
+		Name: "PreToolUse:Bash", Path: settings, Storage: model.StorageEntry,
+		ConfigKey: "hooks/PreToolUse/0/hooks/0",
+		Meta:      map[string]string{"event": "PreToolUse", "matcher": "Bash"},
+	}
+	ed, err := newEditorState(it)
+	if err != nil {
+		t.Fatalf("newEditorState: %v", err)
+	}
+	if !ed.entryMode {
+		t.Fatal("hook editor should run in entryMode")
+	}
+	if !strings.Contains(ed.ta.Value(), "echo old") {
+		t.Errorf("buffer should hold inner-hook JSON, got %q", ed.ta.Value())
+	}
+	if strings.Contains(ed.ta.Value(), "\"keep\"") {
+		t.Errorf("buffer must not include unrelated settings.json keys, got %q", ed.ta.Value())
+	}
+	// Edit the command and save.
+	edited := strings.Replace(ed.ta.Value(), "echo old", "echo new", 1)
+	ed.ta.SetValue(edited)
+	if err := ed.saveEntry(); err != nil {
+		t.Fatalf("saveEntry: %v", err)
+	}
+	got, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "echo new") {
+		t.Errorf("settings.json missing edit:\n%s", s)
+	}
+	if !strings.Contains(s, "\"keep\"") {
+		t.Errorf("unrelated keys clobbered:\n%s", s)
+	}
 }
