@@ -109,6 +109,10 @@ type node struct {
 	collapsed bool   // whether this group is currently collapsed
 	isGroup   bool
 	itemIdx   int // index into Model.items for leaf rows; -1 for groups
+	// PRI-20: marks per-section empty placeholders ("no skills yet").
+	// Dim styling and inert under activate() so the user can land on
+	// it without triggering anything destructive.
+	isEmpty bool
 }
 
 type Model struct {
@@ -951,6 +955,10 @@ func (m Model) activate() Model {
 		m.rebuildTree()
 		return m
 	}
+	if n.isEmpty {
+		// PRI-20 placeholder. Inert — no item to drill into.
+		return m
+	}
 	m.detailFull = true
 	m.detailScroll = 0
 	return m
@@ -1291,6 +1299,17 @@ func (m *Model) rebuildTree() {
 					}
 				}
 			}
+			// PRI-20: per-section empty placeholder. When the Kind group
+			// is expanded but has no Global/Local/Private children, drop
+			// a dimmed "no <kind> yet" leaf so the user knows the section
+			// rendered correctly. itemIdx == -1 keeps it inert — j/k can
+			// land on it, but tab/enter does nothing because activate()
+			// short-circuits on a non-group node with no item.
+			if filter == "" && len(b.global) == 0 && (m.projectDir == "" || len(b.local) == 0) &&
+				(!privateVisible || len(b.private) == 0) {
+				placeholder := "no " + strings.ToLower(k.String()) + " yet"
+				tree = append(tree, node{depth: 2, label: placeholder, itemIdx: -1, isEmpty: true})
+			}
 			// Private subgroup: orchestrator / tmp / tool-internal
 			// sessions. Collapsed by default so dozens of conductor
 			// worktrees don't bury the rest of the tree on first paint.
@@ -1341,7 +1360,7 @@ func (m Model) defaultStatusLine() string {
 	}
 	n := m.tree[m.cursor]
 
-	if !n.isGroup {
+	if !n.isGroup && !n.isEmpty {
 		it := m.items[n.itemIdx]
 		ctx := []string{"tab/enter open", "e edit"}
 		if it.Storage != model.StorageEntry {
@@ -1561,7 +1580,19 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.editing != nil {
+	if len(m.items) == 0 && m.editing == nil && !m.detailFull && m.installing == nil && m.creating == nil {
+		// PRI-20: empty-state. When every adapter returned zero items
+		// (fresh install, no project markers in cwd) the split view
+		// shows two empty panels and the user has no signal that the
+		// TUI loaded successfully. Replace the body with a centered
+		// logo + hint block. We keep the surrounding panel border so
+		// help / install overlays still anchor correctly when opened.
+		fullW := availW - panelBorderW
+		if fullW < 20 {
+			fullW = 20
+		}
+		body = focusedPanelStyle.Width(fullW).Height(contentH).Render(renderEmptyState(fullW, contentH))
+	} else if m.editing != nil {
 		// Editor takes the entire inner area, just like detailFull.
 		// The editor's own resize() already sized the textarea on
 		// open / WindowSizeMsg; here we only render and frame it.
@@ -1723,6 +1754,11 @@ func (m Model) renderTree(w, h int) string {
 			raw = indent + marker + " " + disp
 			raw = truncRunes(raw, contentW)
 			styled = groupStyle.Render(raw)
+		} else if n.isEmpty {
+			// PRI-20: dim "no skills yet" placeholder for empty kind groups.
+			raw = indent + "  " + n.label
+			raw = truncRunes(raw, contentW)
+			styled = dimStyle.Render(raw)
 		} else {
 			label := n.label
 			drifted := false
