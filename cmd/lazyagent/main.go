@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mi-subbotin/lazyagent/internal/config"
+	"github.com/mi-subbotin/lazyagent/internal/index"
 	"github.com/mi-subbotin/lazyagent/internal/install"
 	"github.com/mi-subbotin/lazyagent/internal/logging"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
@@ -101,6 +103,10 @@ func main() {
 	logFile := flag.String("log-file", "", "override the log file path (defaults to logging.file from config)")
 	logFormat := flag.String("log-format", "", "log format: text or json (defaults to logging.format from config)")
 	noUpdateCheck := flag.Bool("no-update-check", false, "skip the weekly GitHub releases check (PRI-19)")
+	allLocal := flag.Bool("all-local", false, "start in PRI-4 all-local mode (fold every discovered project's Local items into the tree)")
+	noIndex := flag.Bool("no-index", false, "skip the global project indexer (PRI-4)")
+	var extraRoots multiFlag
+	flag.Var(&extraRoots, "root", "additional search root for the global indexer (repeatable)")
 	flag.Parse()
 
 	if *showVersion {
@@ -190,6 +196,19 @@ func main() {
 	m := tui.New(srcs, projectDir)
 	m.SetInstallSource(detectInstallSource())
 
+	// PRI-4: bootstrap the global project index. We honour the disk
+	// cache when it is fresh enough (<24h) so first-paint stays fast.
+	// The full re-walk runs in the background after tea starts so a
+	// cold index never blocks the user.
+	var initialProjects []string
+	doIndex := !*noIndex && !*useMock
+	if doIndex {
+		if cached, err := index.LoadCache(); err == nil && index.IsFresh(cached, time.Now(), 24*time.Hour) {
+			initialProjects = projectsFromCache(cached)
+		}
+	}
+	m.SetDiscoveredProjects(initialProjects, *allLocal)
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// PRI-19: spawn the weekly update poll in the background. The
@@ -199,6 +218,13 @@ func main() {
 	// piggy-backs on the same state.json the rest of the TUI uses.
 	if cfg.Updates.Notify && !*noUpdateCheck {
 		go runUpdateCheck(p, cfg.Updates.CheckIntervalDays, version)
+	}
+
+	// PRI-4: re-walk the configured roots in the background and
+	// refresh the cache. The walk takes 2–10s on a typical $HOME, so
+	// blocking startup on it would hurt the brew install experience.
+	if doIndex {
+		go runProjectIndex(p, resolveSearchRoots(cfg.Search.Roots, extraRoots))
 	}
 
 	if _, err := p.Run(); err != nil {
@@ -248,6 +274,75 @@ func runUpdateCheck(p *tea.Program, intervalDays int, current string) {
 		return
 	}
 	p.Send(tui.UpdateAvailableMsg{Version: rel.Version, URL: rel.URL})
+}
+
+// multiFlag implements flag.Value for repeatable string flags. Used
+// for `--root` so users can pass multiple search roots without
+// shell-quoted comma lists.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
+
+// resolveSearchRoots merges roots from config.search.roots with any
+// `--root` flags. Tokens like `$HOME` and `~` are expanded inline.
+// Invalid / empty entries are dropped; on an empty result the walker
+// falls back to $HOME via index.Discover.
+func resolveSearchRoots(cfgRoots []string, cliRoots multiFlag) []string {
+	combined := append([]string(nil), cfgRoots...)
+	combined = append(combined, []string(cliRoots)...)
+	out := make([]string, 0, len(combined))
+	seen := make(map[string]struct{}, len(combined))
+	for _, r := range combined {
+		expanded := config.ExpandPath(strings.TrimSpace(r))
+		if expanded == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(expanded); err == nil {
+			expanded = abs
+		}
+		if _, dup := seen[expanded]; dup {
+			continue
+		}
+		seen[expanded] = struct{}{}
+		out = append(out, expanded)
+	}
+	return out
+}
+
+// projectsFromCache flattens an index.Cache into the slice of project
+// directories the TUI needs.
+func projectsFromCache(c index.Cache) []string {
+	out := make([]string, 0, len(c.Projects))
+	for _, p := range c.Projects {
+		out = append(out, p.Path)
+	}
+	return out
+}
+
+// runProjectIndex performs the cold walk, persists the result, and
+// pushes the refreshed list into the TUI via Program.Send. The walker
+// already filters cloud-sync mounts and big skip-listed directories,
+// so this typically lands inside 2–10s on a developer's $HOME.
+func runProjectIndex(p *tea.Program, roots []string) {
+	projects, err := index.Discover(index.Options{Roots: roots})
+	if err != nil {
+		slog.Warn("index: discover failed", "err", err)
+		return
+	}
+	cache := index.Cache{
+		GeneratedAt: time.Now().Unix(),
+		Roots:       roots,
+		Projects:    projects,
+	}
+	if path, err := index.SaveCache(cache); err != nil {
+		slog.Warn("index: save cache failed", "path", path, "err", err)
+	}
+	out := make([]string, 0, len(projects))
+	for _, pr := range projects {
+		out = append(out, pr.Path)
+	}
+	p.Send(tui.ProjectsDiscoveredMsg{Projects: out})
 }
 
 // detectInstallSource returns "brew" when a goreleaser-built binary

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -216,14 +217,16 @@ type Model struct {
 	updateURL       string
 	updateBannerOff bool
 	installSource   string
-}
 
-// SetInstallSource records how the binary was installed ("brew",
-// "go-install", "unknown"). main.go calls this once before tea.Run so
-// the update banner can suggest the right upgrade command. Stored on
-// Model rather than passed through New so additional flags do not turn
-// the constructor into a kitchen sink.
-func (m *Model) SetInstallSource(s string) { m.installSource = s }
+	// PRI-4: "all local" mode. discoveredProjects is the full list of
+	// project roots the global indexer found across the user's home
+	// directory; allLocal toggles whether their items are folded into
+	// the tree under each Origin's Local section. Items from foreign
+	// projects carry Item.Meta["project"] = projectDir so the renderer
+	// can suffix them with the project name.
+	discoveredProjects []string
+	allLocal           bool
+}
 
 func New(srcs []sources.Source, projectDir string) Model {
 	st, _ := state.Load()
@@ -236,6 +239,29 @@ func New(srcs []sources.Source, projectDir string) Model {
 		sessionBodyCache:    map[string]string{},
 		hidePrivateSessions: st.HidePrivateSessions,
 	}
+}
+
+// SetInstallSource records how the binary was installed ("brew",
+// "go-install", "unknown"). main.go calls this once before tea.Run so
+// the update banner can suggest the right upgrade command. Stored on
+// Model rather than passed through New so additional flags do not turn
+// the constructor into a kitchen sink.
+func (m *Model) SetInstallSource(s string) { m.installSource = s }
+
+// SetDiscoveredProjects seeds the global index lookup (PRI-4). The
+// list is the absolute paths the walker found that contain at least
+// one tool marker. The cwd-project — if any — is filtered out of this
+// list before display so we never duplicate it. allLocal flips the
+// initial mode; users toggle at runtime with `A`.
+func (m *Model) SetDiscoveredProjects(projects []string, allLocal bool) {
+	out := make([]string, 0, len(projects))
+	for _, p := range projects {
+		if p != "" && p != m.projectDir {
+			out = append(out, p)
+		}
+	}
+	m.discoveredProjects = out
+	m.allLocal = allLocal
 }
 
 func defaultExpanded() map[string]bool {
@@ -298,6 +324,14 @@ type UpdateAvailableMsg struct {
 	URL     string
 }
 
+// ProjectsDiscoveredMsg is sent by the global indexer in main.go after
+// a fresh walk of the configured search roots completes. The list
+// replaces whatever was preloaded from the cache; if `A` is currently
+// on we trigger a reload so newly-discovered projects show up.
+type ProjectsDiscoveredMsg struct {
+	Projects []string
+}
+
 func (m Model) Init() tea.Cmd {
 	return m.loadCmd()
 }
@@ -312,6 +346,36 @@ func (m Model) loadCmd() tea.Cmd {
 				return itemsLoadedMsg{err: fmt.Errorf("%s: %w", s.Name(), err)}
 			}
 			all = append(all, items...)
+		}
+		// PRI-4: when allLocal is on, fan out each adapter across the
+		// projects discovered by the global indexer and fold the
+		// resulting Local-scope items into the same flat slice. We tag
+		// them with Item.Meta["project"] so the renderer can suffix
+		// them with the project directory name; non-Local items
+		// returned by these calls (Global skills, sessions, etc.) are
+		// already covered by the cwd pass and would only create dupes,
+		// so we drop them.
+		if m.allLocal {
+			for _, projectDir := range m.discoveredProjects {
+				for _, s := range m.srcs {
+					items, err := s.List(ctx, projectDir)
+					if err != nil {
+						continue
+					}
+					for _, it := range items {
+						if it.Scope != model.ScopeLocal {
+							continue
+						}
+						if it.Meta == nil {
+							it.Meta = map[string]string{}
+						}
+						if _, ok := it.Meta["project"]; !ok {
+							it.Meta["project"] = projectDir
+						}
+						all = append(all, it)
+					}
+				}
+			}
 		}
 		// Post-pass: classify items against the shared store. Adapters
 		// already mark symlink projections via ResolvesToStore, but
@@ -377,6 +441,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateAvailable = msg.Version
 			m.updateURL = msg.URL
 			m.updateBannerOff = false
+		}
+		return m, nil
+
+	case ProjectsDiscoveredMsg:
+		// PRI-4: refreshed project index landed. Filter out the cwd
+		// project so we don't double-count it. If all-local mode is
+		// already on, kick a reload so the freshly-discovered roots
+		// show up in the tree.
+		filtered := make([]string, 0, len(msg.Projects))
+		for _, p := range msg.Projects {
+			if p != "" && p != m.projectDir {
+				filtered = append(filtered, p)
+			}
+		}
+		m.discoveredProjects = filtered
+		if m.allLocal {
+			m.loading = true
+			return m, m.loadCmd()
 		}
 		return m, nil
 
@@ -534,6 +616,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			for k := range m.sessionBodyCache {
 				delete(m.sessionBodyCache, k)
+			}
+			return m, m.loadCmd()
+		case "A":
+			// PRI-4: toggle "all local" projects mode. When on, items
+			// from every discovered project root are folded into the
+			// tree under their tool's Local section. We trigger a full
+			// reload so the underlying source slice gets re-fanned.
+			m.allLocal = !m.allLocal
+			m.loading = true
+			for k := range m.glamourCache {
+				delete(m.glamourCache, k)
+			}
+			if m.allLocal {
+				m.setToast(fmt.Sprintf("all-local: scanning %d projects", len(m.discoveredProjects)))
+			} else {
+				m.setToast("all-local: off")
 			}
 			return m, m.loadCmd()
 		case "/":
@@ -1487,6 +1585,7 @@ func helpText() string {
 		"  n        create new Skill / Agent / Prompt\n" +
 		"  i        install from a github.com / gist URL\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
+		"  A        toggle all-local mode (fold every discovered project's items)\n" +
 		"  r        reload all sources\n" +
 		"  ?        toggle this help\n" +
 		"  q        quit\n" +
@@ -1851,6 +1950,12 @@ func (m Model) renderTree(w, h int) string {
 				if it.Drift {
 					label += " (drift)"
 					drifted = true
+				}
+				// PRI-4: surface the source project for items folded in
+				// from the global indexer. Items in cwd-project don't
+				// carry the Meta key, so they render unchanged.
+				if proj, ok := it.Meta["project"]; ok && proj != "" && proj != m.projectDir {
+					label += " [" + filepath.Base(proj) + "]"
 				}
 				// PRI-18: surface frontmatter problems in the tree so a
 				// user with a malformed file knows where to look. Errors
