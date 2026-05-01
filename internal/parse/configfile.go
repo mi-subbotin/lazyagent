@@ -71,29 +71,39 @@ func Read(path string) (map[string]any, ConfigFormat, error) {
 // `<path>.tmp` sibling and is renamed into place on success, so a
 // crashed or canceled write never leaves a half-written config behind.
 func Write(path string, data map[string]any, f ConfigFormat) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	blob, err := Marshal(data, f)
+	if err != nil {
 		return err
 	}
-	var blob []byte
-	switch f {
-	case FormatTOML:
-		var b bytes.Buffer
-		if err := toml.NewEncoder(&b).Encode(data); err != nil {
-			return err
-		}
-		blob = b.Bytes()
-	default:
-		out, err := json.MarshalIndent(data, "", "  ")
-		if err != nil {
-			return err
-		}
-		blob = append(out, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// Marshal returns the byte-for-byte serialization that Write would put on
+// disk. Useful for callers that want to compute a diff against existing
+// content before writing — the Fix action uses it to produce After bytes
+// without touching the filesystem.
+func Marshal(data map[string]any, f ConfigFormat) ([]byte, error) {
+	switch f {
+	case FormatTOML:
+		var b bytes.Buffer
+		if err := toml.NewEncoder(&b).Encode(data); err != nil {
+			return nil, err
+		}
+		return b.Bytes(), nil
+	default:
+		out, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(out, '\n'), nil
+	}
 }
 
 // SplitKey splits a slash-joined key path ("mcpServers/linear") into

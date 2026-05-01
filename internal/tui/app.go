@@ -43,11 +43,17 @@ type pendingKind int
 
 const (
 	pendDelete pendingKind = iota
+	pendFix
 )
 
 type pendingOp struct {
 	kind pendingKind
 	item model.Item // snapshot — survives even if list reshuffles
+	// fix carries the pre-flight FixPlan for pendFix so the confirm
+	// overlay can show before/after bytes and updateConfirm can apply
+	// them without re-running Fix (which is non-deterministic when
+	// callers mutate the file between key presses).
+	fix actions.FixPlan
 }
 
 // createOverlay drives the "create new item" flow opened with `n`. The
@@ -66,6 +72,8 @@ func (p pendingOp) verb() string {
 	switch p.kind {
 	case pendDelete:
 		return "Delete"
+	case pendFix:
+		return "Fix"
 	}
 	return "?"
 }
@@ -650,6 +658,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pending = &pendingOp{kind: pendDelete, item: it}
 			}
 			return m, nil
+		case "F":
+			// PRI-73: deterministic auto-fix for items the validators
+			// flagged as `(invalid)`. We compute the plan up-front so the
+			// confirm overlay can preview the rewritten bytes; the user
+			// still has to say `y` before anything is written.
+			it, ok := m.currentItem()
+			if !ok {
+				return m, nil
+			}
+			if it.ParseError == "" {
+				m.setToast("fix: nothing to fix — item is already valid")
+				return m, nil
+			}
+			plan, err := actions.Fix(it)
+			if err != nil {
+				m.setToast("fix: " + err.Error())
+				return m, nil
+			}
+			m.pending = &pendingOp{kind: pendFix, item: it, fix: plan}
+			return m, nil
 		case "p":
 			it, ok := m.currentItem()
 			if !ok {
@@ -1099,6 +1127,8 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch op.kind {
 		case pendDelete:
 			err = actions.Delete(op.item)
+		case pendFix:
+			err = actions.ApplyFix(op.fix)
 		}
 		if err != nil {
 			m.setToast(formatActionError(op, err))
@@ -1792,6 +1822,7 @@ func helpText() string {
 		"  esc      clear filter / cancel filter editor / cancel confirm\n" +
 		"  t        toggle JSON / TOML for MCP entries\n" +
 		"  d        delete item (asks y/n)\n" +
+		"  F        auto-fix invalid item (rewrites bad frontmatter / hook entry)\n" +
 		"  p        place item — pick which (Origin × Scope) cells project\n" +
 		"           the item from the library; bytes live once in\n" +
 		"           ~/.lazyagent/library and project back to each chosen cell\n" +
@@ -1828,9 +1859,74 @@ func confirmText(p pendingOp, _ string) string {
 	switch p.kind {
 	case pendDelete:
 		lines = append(lines, "Permanently remove from disk.")
+	case pendFix:
+		lines = append(lines, dimStyle.Render("Reason: "+p.fix.Reason))
+		lines = append(lines, "")
+		lines = append(lines, "Proposed change:")
+		lines = append(lines, "")
+		lines = append(lines, fixDiffPreview(p.fix))
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Re-validates after write; rolls back if still invalid."))
 	}
 	lines = append(lines, "")
 	lines = append(lines, dimStyle.Render("y to confirm · n / esc to cancel"))
+	return strings.Join(lines, "\n")
+}
+
+// fixDiffPreview renders a compact line-oriented diff between the
+// before/after bytes of a FixPlan. We don't pull in a real diff library
+// for this — the typical fix touches one or two frontmatter lines and
+// the user just wants to see what changed. Lines added show with `+`;
+// lines removed with `-`. Long files are truncated past 12 changes so
+// the overlay stays readable.
+func fixDiffPreview(plan actions.FixPlan) string {
+	before := strings.Split(string(plan.Before), "\n")
+	after := strings.Split(string(plan.After), "\n")
+	var lines []string
+	beforeSet := map[string]int{}
+	for _, ln := range before {
+		beforeSet[ln]++
+	}
+	afterSet := map[string]int{}
+	for _, ln := range after {
+		afterSet[ln]++
+	}
+	const maxLines = 12
+	count := 0
+	for _, ln := range before {
+		if afterSet[ln] > 0 {
+			afterSet[ln]--
+			continue
+		}
+		if count == maxLines {
+			lines = append(lines, dimStyle.Render("  …"))
+			count++
+			continue
+		}
+		if count < maxLines {
+			lines = append(lines, "  - "+ln)
+		}
+		count++
+	}
+	count = 0
+	for _, ln := range after {
+		if beforeSet[ln] > 0 {
+			beforeSet[ln]--
+			continue
+		}
+		if count == maxLines {
+			lines = append(lines, dimStyle.Render("  …"))
+			count++
+			continue
+		}
+		if count < maxLines {
+			lines = append(lines, "  + "+ln)
+		}
+		count++
+	}
+	if len(lines) == 0 {
+		return dimStyle.Render("  (no textual change)")
+	}
 	return strings.Join(lines, "\n")
 }
 

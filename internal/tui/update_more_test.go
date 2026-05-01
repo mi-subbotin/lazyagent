@@ -632,3 +632,71 @@ func TestSyncOverlayAllSkippedYIsNoop(t *testing.T) {
 		t.Errorf("y on a non-mutating plan should close the overlay; still open")
 	}
 }
+
+// PRI-73: F on a valid item is a no-op + toast (we should not open a
+// confirm overlay for items that have nothing to fix).
+func TestFixKeyOnValidItemTosts(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "/tmp/proj")
+	m.expanded["Claude/Skills/Global"] = true
+	m.rebuildTree()
+	moveToFirstLeaf(&m)
+	m = feed(t, m, "F")
+	if m.pending != nil {
+		t.Errorf("F on a valid item must not open the confirm overlay")
+	}
+	if !strings.Contains(m.toast, "nothing to fix") {
+		t.Errorf("expected 'nothing to fix' toast, got %q", m.toast)
+	}
+}
+
+// PRI-73: F on an invalid markdown item builds a FixPlan, parks it on
+// the pending op, and the confirm overlay can render. Pressing y
+// applies the plan and clears pending.
+func TestFixKeyAppliesPlanOnInvalidItem(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := dir + "/skills/broken"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := skillDir + "/SKILL.md"
+	in := "---\nname: broken\ndescription: line one.\nspillover here.\n---\nbody\n"
+	if err := os.WriteFile(path, []byte(in), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{{
+		Origin:     model.OriginClaude,
+		Kind:       model.KindSkill,
+		Scope:      model.ScopeGlobal,
+		Name:       "broken",
+		Path:       path,
+		Storage:    model.StorageDir,
+		ParseError: "line 4: expected `key: value`, got \"spillover here.\"",
+	}}
+	m := newTestModel(t, items, "")
+	m.expanded["Claude/Skills/Global"] = true
+	m.rebuildTree()
+	moveToFirstLeaf(&m)
+
+	m = feed(t, m, "F")
+	if m.pending == nil {
+		t.Fatalf("F should open the fix-confirm overlay (toast=%q)", m.toast)
+	}
+	if m.pending.kind != pendFix {
+		t.Fatalf("pending kind should be pendFix, got %v", m.pending.kind)
+	}
+	if len(m.pending.fix.After) == 0 {
+		t.Fatal("pending.fix.After should be populated")
+	}
+
+	m = feed(t, m, "y")
+	if m.pending != nil {
+		t.Error("y should clear pending")
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "spillover here.\n") && !strings.Contains(string(out), "line one. spillover here.") {
+		t.Errorf("rewrite did not merge spillover:\n%s", out)
+	}
+}
