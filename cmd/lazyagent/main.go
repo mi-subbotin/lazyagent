@@ -95,6 +95,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "ignore" {
+		if err := runIgnoreSubcommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lazyagent:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	useMock := flag.Bool("mock", false, "use the mock data source instead of real adapters")
 	showVersion := flag.Bool("version", false, "print version information and exit")
@@ -200,11 +207,19 @@ func main() {
 	// cache when it is fresh enough (<24h) so first-paint stays fast.
 	// The full re-walk runs in the background after tea starts so a
 	// cold index never blocks the user.
+	//
+	// PRI-10: load the user's ignore file once and apply it both to
+	// the cached projects (in case the user added a rule between
+	// walks) and to the live re-walk goroutine.
 	var initialProjects []string
 	doIndex := !*noIndex && !*useMock
+	ignoreFilter, ignoreErr := index.LoadIgnore()
+	if ignoreErr != nil {
+		slog.Warn("ignore: load failed", "err", ignoreErr)
+	}
 	if doIndex {
 		if cached, err := index.LoadCache(); err == nil && index.IsFresh(cached, time.Now(), 24*time.Hour) {
-			initialProjects = projectsFromCache(cached)
+			initialProjects = filterIgnored(projectsFromCache(cached), ignoreFilter)
 		}
 	}
 	m.SetDiscoveredProjects(initialProjects, *allLocal)
@@ -224,7 +239,7 @@ func main() {
 	// refresh the cache. The walk takes 2–10s on a typical $HOME, so
 	// blocking startup on it would hurt the brew install experience.
 	if doIndex {
-		go runProjectIndex(p, resolveSearchRoots(cfg.Search.Roots, extraRoots))
+		go runProjectIndex(p, resolveSearchRoots(cfg.Search.Roots, extraRoots), ignoreFilter)
 	}
 
 	if _, err := p.Run(); err != nil {
@@ -320,12 +335,33 @@ func projectsFromCache(c index.Cache) []string {
 	return out
 }
 
+// filterIgnored drops paths matching the user's ignore filter (PRI-10)
+// before they reach the TUI. The walker already applies the same
+// filter on a fresh re-walk; this is the same logic re-run against the
+// disk cache so a user can add an ignore rule and see it take effect
+// without waiting for the next cold walk.
+func filterIgnored(paths []string, ig *index.Ignore) []string {
+	if ig == nil {
+		return paths
+	}
+	out := paths[:0]
+	for _, p := range paths {
+		if !ig.Match(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // runProjectIndex performs the cold walk, persists the result, and
 // pushes the refreshed list into the TUI via Program.Send. The walker
 // already filters cloud-sync mounts and big skip-listed directories,
 // so this typically lands inside 2–10s on a developer's $HOME.
-func runProjectIndex(p *tea.Program, roots []string) {
-	projects, err := index.Discover(index.Options{Roots: roots})
+//
+// ignoreFilter (PRI-10) is the user's `~/.lazyagent/ignore` ruleset;
+// nil means "no privacy filter".
+func runProjectIndex(p *tea.Program, roots []string, ignoreFilter *index.Ignore) {
+	projects, err := index.Discover(index.Options{Roots: roots, Ignore: ignoreFilter})
 	if err != nil {
 		slog.Warn("index: discover failed", "err", err)
 		return

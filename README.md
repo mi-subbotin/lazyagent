@@ -319,7 +319,32 @@ For bug reports, please attach `lazyagent logs tail` output — the [`bug_report
 
 ## Privacy
 
-`lazyagent` runs entirely local. It reads files from your home directory and your project, writes only when you trigger an explicit action (delete / copy / move / cross / share / resync / edit), and makes **no network calls**. No telemetry, no analytics, no opt-out toggle because there's nothing to opt out of.
+`lazyagent` runs entirely local. It reads files from your home directory and your project, and writes only when you trigger an explicit action (delete / copy / move / cross / share / resync / edit). No telemetry, no analytics.
+
+The only outbound traffic is an optional weekly check of the GitHub releases API for an "↑ vX.Y.Z available" banner. Disable with `[updates] notify = false` in `~/.lazyagent/config.toml` or `--no-update-check` on a single launch.
+
+### Filtering local projects
+
+The global indexer (`A` hotkey) walks `$HOME` to find every directory that looks like a project root. To keep work / corporate / experimental trees out of that view, drop a gitignore-syntax file at `~/.lazyagent/ignore`:
+
+```
+# work projects
+~/work/
+$HOME/Company/
+
+# anything matching a glob
+**/private-*
+```
+
+Manage it from the CLI without touching the file directly:
+
+```bash
+lazyagent ignore add '~/work/'   # append a pattern
+lazyagent ignore list            # print the active rules
+lazyagent ignore path            # print the file path
+```
+
+`~/` and `$HOME/` are expanded to your home directory at load time. Anything else passes through to standard gitignore semantics — negations (`!`), globs, and anchored paths all work.
 
 ## Contributing
 

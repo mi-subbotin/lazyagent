@@ -97,10 +97,16 @@ type Project struct {
 // to keep cloud-sync mounts (iCloud, Dropbox, OneDrive, Google Drive)
 // out of the index. Adding a path here is cheaper than walking it and
 // then filtering on the way out.
+//
+// Ignore (PRI-10) is a user-supplied gitignore-style filter applied
+// during the walk: any directory matching a pattern is pruned, and a
+// late re-check before recording catches pattern shapes that match
+// the project root but not its parents. Nil disables the filter.
 type Options struct {
 	Roots        []string
 	MaxDepth     int
 	SkipPrefixes []string
+	Ignore       *Ignore
 }
 
 // Discover walks every root in opts and returns the deduplicated list
@@ -137,7 +143,7 @@ func Discover(opts Options) ([]Project, error) {
 		if err != nil {
 			continue
 		}
-		walkRoot(absRoot, maxDepth, skip, seen)
+		walkRoot(absRoot, maxDepth, skip, opts.Ignore, seen)
 	}
 
 	out := make([]Project, 0, len(seen))
@@ -153,7 +159,7 @@ func Discover(opts Options) ([]Project, error) {
 // it finds. Once a directory matches a marker we record it and prune
 // — a project's own `.claude` / `.codex` subdirs are never themselves
 // surfaced as separate projects.
-func walkRoot(root string, maxDepth int, skipPrefixes []string, out map[string]*Project) {
+func walkRoot(root string, maxDepth int, skipPrefixes []string, ig *Ignore, out map[string]*Project) {
 	rootDepth := strings.Count(root, string(filepath.Separator))
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -184,6 +190,12 @@ func walkRoot(root string, maxDepth int, skipPrefixes []string, out map[string]*
 				return fs.SkipDir
 			}
 		}
+		// PRI-10: prune anything matching the user's ignore file
+		// before any per-name work. Same semantics as skipPrefixes —
+		// the cheapest place to drop a subtree is before reading it.
+		if ig.Match(path) {
+			return fs.SkipDir
+		}
 		// Don't descend into hidden dirs except project roots that have
 		// markers themselves (handled below). Skipping `.local`,
 		// `.config`, etc. prunes huge swathes of $HOME without losing
@@ -196,6 +208,13 @@ func walkRoot(root string, maxDepth int, skipPrefixes []string, out map[string]*
 		markers := matchMarkers(path)
 		if len(markers) == 0 {
 			return nil
+		}
+		// Defensive late re-check: a pattern shaped like `**/private-*`
+		// may not match the parent on the way down (depending on the
+		// matcher's anchoring) but still wants the leaf out of the
+		// index. Cheap, and clearer than relying on prune semantics.
+		if ig.Match(path) {
+			return fs.SkipDir
 		}
 		out[path] = &Project{Path: path, Markers: markers}
 		// Prune: a real project rarely contains another project, and
