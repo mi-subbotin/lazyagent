@@ -64,6 +64,14 @@ const (
 	// using the existing tree machinery (project name lives in Item.Meta
 	// under "project").
 	KindSession
+	// KindHook (PRI-26) is a tool's pre/post-event hook — a shell
+	// command Claude/Codex/Gemini run on PreToolUse, PostToolUse,
+	// SessionStart, etc. Hooks live as entries inside the same
+	// settings.json files MCP servers use, so adapters emit them with
+	// StorageEntry and a ConfigKey of "hooks/<event>/<idx>". The TUI
+	// renders them with a "⚠ runs shell" warning so a glance at the
+	// detail panel is enough to see what will execute.
+	KindHook
 )
 
 func (k Kind) String() string {
@@ -80,6 +88,8 @@ func (k Kind) String() string {
 		return "Memory"
 	case KindSession:
 		return "Sessions"
+	case KindHook:
+		return "Hooks"
 	}
 	return "?"
 }
@@ -99,6 +109,8 @@ func ParseKind(s string) (Kind, bool) {
 		return KindMemory, true
 	case "Sessions":
 		return KindSession, true
+	case "Hooks":
+		return KindHook, true
 	}
 	return 0, false
 }

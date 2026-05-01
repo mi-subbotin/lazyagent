@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -104,28 +105,45 @@ func SplitKey(k string) []string {
 	return strings.Split(k, "/")
 }
 
-// Get walks a nested map[string]any tree and returns the value at the
-// slash-joined key path, or (nil, false) if any intermediate node is
-// missing or not a map.
+// Get walks a nested map[string]any / []any tree and returns the value
+// at the slash-joined key path, or (nil, false) if any intermediate
+// node is missing, mistyped, or out-of-range. Numeric segments are
+// interpreted as array indices when the current node is an []any —
+// this lets callers walk into Claude `hooks/<event>/0/0`-shaped paths
+// without a custom navigator.
 func Get(m map[string]any, keyPath string) (any, bool) {
 	parts := SplitKey(keyPath)
 	if len(parts) == 0 {
 		return nil, false
 	}
-	cur := m
+	var cur any = m
 	for i, p := range parts {
-		v, ok := cur[p]
+		next, ok := step(cur, p)
 		if !ok {
 			return nil, false
 		}
 		if i == len(parts)-1 {
-			return v, true
-		}
-		next, ok := v.(map[string]any)
-		if !ok {
-			return nil, false
+			return next, true
 		}
 		cur = next
+	}
+	return nil, false
+}
+
+// step descends one segment into either a map[string]any or a []any.
+// Returns the child value and whether the step succeeded. Used by the
+// array-aware Get / Delete walkers.
+func step(node any, segment string) (any, bool) {
+	switch n := node.(type) {
+	case map[string]any:
+		v, ok := n[segment]
+		return v, ok
+	case []any:
+		idx, err := strconv.Atoi(segment)
+		if err != nil || idx < 0 || idx >= len(n) {
+			return nil, false
+		}
+		return n[idx], true
 	}
 	return nil, false
 }
@@ -156,27 +174,110 @@ func Set(m map[string]any, keyPath string, v any) {
 // value was actually removed. Intermediate maps that become empty are
 // left in place — pruning surprises users who expect their `mcpServers`
 // key to remain (just empty) after the last server is removed.
+//
+// Array-aware: a numeric leaf segment under an []any parent splices
+// the element out (preserving order). The same applies to intermediate
+// segments — the walk descends into arrays when the segment parses as
+// an int and the parent is a slice. Used by the hooks Delete path
+// where keys look like `hooks/<event>/<idx>/<idx>`.
 func Delete(m map[string]any, keyPath string) bool {
 	parts := SplitKey(keyPath)
 	if len(parts) == 0 {
 		return false
 	}
-	cur := m
-	for i, p := range parts {
-		if i == len(parts)-1 {
-			if _, ok := cur[p]; !ok {
-				return false
-			}
-			delete(cur, p)
-			return true
-		}
-		next, ok := cur[p].(map[string]any)
-		if !ok {
+	if len(parts) == 1 {
+		if _, ok := m[parts[0]]; !ok {
 			return false
 		}
-		cur = next
+		delete(m, parts[0])
+		return true
+	}
+	parent, ok := walkToParent(m, parts[:len(parts)-1])
+	if !ok {
+		return false
+	}
+	leaf := parts[len(parts)-1]
+	switch p := parent.(type) {
+	case map[string]any:
+		if _, ok := p[leaf]; !ok {
+			return false
+		}
+		delete(p, leaf)
+		return true
+	case *sliceRef:
+		idx, err := strconv.Atoi(leaf)
+		if err != nil || idx < 0 || idx >= len(*p.s) {
+			return false
+		}
+		*p.s = append((*p.s)[:idx], (*p.s)[idx+1:]...)
+		p.commit()
+		return true
 	}
 	return false
+}
+
+// sliceRef wraps a []any in a way that the array-aware walker can
+// mutate the slice header in its containing parent. commit() writes
+// the new slice header back to the parent that referenced it.
+type sliceRef struct {
+	s      *[]any
+	commit func()
+}
+
+// walkToParent descends `parts` one segment at a time and returns the
+// node holding the would-be leaf. Maps are returned directly; arrays
+// are wrapped in *sliceRef so callers can splice elements without
+// losing the reference through the parent map.
+func walkToParent(m map[string]any, parts []string) (any, bool) {
+	if len(parts) == 0 {
+		return m, true
+	}
+	var cur any = m
+	for i, seg := range parts {
+		switch n := cur.(type) {
+		case map[string]any:
+			v, ok := n[seg]
+			if !ok {
+				return nil, false
+			}
+			if arr, ok := v.([]any); ok {
+				ref := &sliceRef{s: &arr, commit: func() { n[seg] = arr }}
+				if i == len(parts)-1 {
+					return ref, true
+				}
+				cur = ref
+				continue
+			}
+			cur = v
+		case *sliceRef:
+			idx, err := strconv.Atoi(seg)
+			if err != nil || idx < 0 || idx >= len(*n.s) {
+				return nil, false
+			}
+			v := (*n.s)[idx]
+			if arr, ok := v.([]any); ok {
+				captured := arr
+				outer := n
+				outerIdx := idx
+				ref := &sliceRef{
+					s: &captured,
+					commit: func() {
+						(*outer.s)[outerIdx] = captured
+						outer.commit()
+					},
+				}
+				if i == len(parts)-1 {
+					return ref, true
+				}
+				cur = ref
+				continue
+			}
+			cur = v
+		default:
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 // ReadEntry returns the value at keyPath inside the config file at path

@@ -272,18 +272,21 @@ func defaultExpanded() map[string]bool {
 		"Claude/MCP":     true,
 		"Claude/Prompts": true,
 		"Claude/Memory":  true,
+		"Claude/Hooks":   true,
 		"Codex":          true,
 		"Codex/Skills":   true,
 		"Codex/Agents":   true,
 		"Codex/MCP":      true,
 		"Codex/Prompts":  true,
 		"Codex/Memory":   true,
+		"Codex/Hooks":    true,
 		"Gemini":         true,
 		"Gemini/Skills":  true,
 		"Gemini/Agents":  true,
 		"Gemini/MCP":     true,
 		"Gemini/Prompts": true,
 		"Gemini/Memory":  true,
+		"Gemini/Hooks":   true,
 		"Shared":         true,
 		"Shared/Skills":  true,
 		"Shared/Agents":  true,
@@ -1358,7 +1361,7 @@ func (m *Model) rebuildTree() {
 			break
 		}
 	}
-	kindOrder := []model.Kind{model.KindSkill, model.KindAgent, model.KindMCP, model.KindPrompt, model.KindMemory, model.KindSession}
+	kindOrder := []model.Kind{model.KindSkill, model.KindAgent, model.KindMCP, model.KindPrompt, model.KindMemory, model.KindHook, model.KindSession}
 
 	for _, o := range originOrder {
 		buckets[o] = &originBucket{kinds: map[model.Kind]*kindBucket{}}

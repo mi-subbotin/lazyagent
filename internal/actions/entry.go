@@ -23,7 +23,16 @@ func deleteEntry(it model.Item) error {
 // opposite scope. The target config file may not exist yet — we create
 // it (and any parent directories) with just this entry. Refuses to
 // overwrite an existing entry of the same name.
+//
+// PRI-26 caveat: hook entries live inside arrays under
+// `hooks/<event>[i].hooks[j]` and can't yet round-trip through
+// parse.WriteEntry (which only knows map paths). We refuse rather
+// than silently corrupting the destination file. Direct edit via
+// `e` (open the whole settings.json in $EDITOR) still works.
 func copyEntry(it model.Item, projectDir string) error {
+	if it.Kind == model.KindHook {
+		return fmt.Errorf("%w: copy/move not yet supported for hooks; use 'e' to edit settings.json directly", ErrUnsupported)
+	}
 	val, _, err := parse.ReadEntry(it.Path, it.ConfigKey)
 	if err != nil {
 		return err

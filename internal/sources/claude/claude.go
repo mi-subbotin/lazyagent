@@ -56,6 +56,7 @@ func (s Source) List(_ context.Context, projectDir string) ([]model.Item, error)
 	out = append(out, scanCommands(globalRoot, model.ScopeGlobal)...)
 	out = append(out, scanMCPFile(filepath.Join(home, ".claude.json"), "", model.ScopeGlobal)...)
 	out = append(out, scanMCPFile(filepath.Join(globalRoot, "settings.json"), "", model.ScopeGlobal)...)
+	out = append(out, scanHooksFile(filepath.Join(globalRoot, "settings.json"), model.ScopeGlobal)...)
 	if mem := readMemory(filepath.Join(globalRoot, "CLAUDE.md"), model.ScopeGlobal); mem != nil {
 		out = append(out, *mem)
 	}
@@ -69,6 +70,7 @@ func (s Source) List(_ context.Context, projectDir string) ([]model.Item, error)
 		out = append(out, scanCommands(localRoot, model.ScopeLocal)...)
 		out = append(out, scanMCPFile(filepath.Join(projectDir, ".mcp.json"), "", model.ScopeLocal)...)
 		out = append(out, scanMCPFile(filepath.Join(localRoot, "settings.json"), "", model.ScopeLocal)...)
+		out = append(out, scanHooksFile(filepath.Join(localRoot, "settings.json"), model.ScopeLocal)...)
 		// Per-project mcpServers nested under `projects.<absPath>` in ~/.claude.json
 		out = append(out, scanMCPFile(filepath.Join(home, ".claude.json"), projectDir, model.ScopeLocal)...)
 		if mem := readMemory(filepath.Join(projectDir, "CLAUDE.md"), model.ScopeLocal); mem != nil {
