@@ -118,6 +118,11 @@ type Model struct {
 	// single Origin × Scope matrix backed by ~/.lazyagent/library.
 	placePicker *placePicker
 
+	// syncing is non-nil while the bulk-sync overlay is open (key `S`).
+	// Replaces the headless `lazyagent library sync` for interactive
+	// users; same planner / executor underneath. PRI-64.
+	syncing *syncOverlay
+
 	// resyncPicker is non-nil while the drift-resolution overlay is
 	// open. Single keypress (c/t/esc) decides which side wins.
 	resyncPicker *resyncPicker
@@ -543,6 +548,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePlacePicker(msg)
 		}
 
+		// Sync-all overlay (`S`): full plan preview + apply. PRI-64.
+		if m.syncing != nil {
+			return m.updateSyncOverlay(msg)
+		}
+
 		// Resync picker: c/t/esc.
 		if m.resyncPicker != nil {
 			return m.updateResyncPicker(msg)
@@ -651,6 +661,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.placePicker = p
+			return m, nil
+		case "S":
+			// Bulk sync: project every shareable global item to every
+			// supported tool, importing into the library where needed.
+			// PRI-64: TUI surface for the headless `library sync`.
+			plan := actions.SyncAll(m.items)
+			if len(plan.Ops) == 0 {
+				m.setToast("sync: no items to consider")
+				return m, nil
+			}
+			m.syncing = newSyncOverlay(plan)
 			return m, nil
 		case "R":
 			it, ok := m.currentItem()
@@ -1775,6 +1796,7 @@ func helpText() string {
 		"           the item from the library; bytes live once in\n" +
 		"           ~/.lazyagent/library and project back to each chosen cell\n" +
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
+		"  S        sync-all: bulk Place every shareable global item to every tool\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
@@ -1966,6 +1988,9 @@ func (m Model) View() string {
 	} else if m.installing != nil {
 		body = overlay(body, installOverlayText(m.installing),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.syncing != nil {
+		body = overlay(body, syncOverlayText(*m.syncing),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
 	switch {
@@ -1981,6 +2006,12 @@ func (m Model) View() string {
 		statusLine = " filter · ↑↓ navigate · tab/enter open · esc cancel · backspace edit · ctrl+u clear "
 	case m.placePicker != nil:
 		statusLine = " arrows move · space toggle · enter apply · esc cancel "
+	case m.syncing != nil:
+		if m.syncing.applied {
+			statusLine = " sync done · esc close "
+		} else {
+			statusLine = " sync · j/k navigate · y apply · o overwrite-on-conflict · esc cancel "
+		}
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "
 	default:

@@ -579,3 +579,56 @@ func TestEditorEntryModeOnHookSavesViaWriteEntry(t *testing.T) {
 		t.Errorf("unrelated keys clobbered:\n%s", s)
 	}
 }
+
+// PRI-64: pressing S opens the sync overlay populated from SyncAll.
+// The fixture has at least one shareable global item, so the plan is
+// non-empty and the overlay surfaces it.
+func TestSyncOverlayOpensWithS(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel(t, fixtureItems(), "")
+	m = feed(t, m, "S")
+	if m.syncing == nil {
+		t.Fatal("S should open the sync overlay")
+	}
+	if len(m.syncing.plan.Ops) == 0 {
+		t.Fatalf("plan must have at least one op for the fixture")
+	}
+	m = feed(t, m, "esc")
+	if m.syncing != nil {
+		t.Error("esc should close the sync overlay")
+	}
+}
+
+// Empty input items → toast, no overlay. The overlay should never open
+// with a blank plan (would be confusing and there's nothing to apply).
+func TestSyncOverlayNoOpsToastsAndStaysClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel(t, nil, "")
+	m = feed(t, m, "S")
+	if m.syncing != nil {
+		t.Error("empty plan should not open overlay")
+	}
+}
+
+// Plan with only Skip ops (e.g. only an MCP entry) opens the overlay
+// (so the user can read the reason) but `y` becomes a no-op + toast.
+func TestSyncOverlayAllSkippedYIsNoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindMCP, Scope: model.ScopeGlobal,
+			Name: "linear", Path: "/tmp/.claude.json", ConfigKey: "mcpServers/linear",
+			Storage: model.StorageEntry},
+	}
+	m := newTestModel(t, items, "")
+	m = feed(t, m, "S")
+	if m.syncing == nil {
+		t.Fatal("S should open even when only skips are present")
+	}
+	if m.syncing.plan.Mutating() {
+		t.Error("plan with only MCP entry should be non-mutating")
+	}
+	m = feed(t, m, "y")
+	if m.syncing != nil {
+		t.Errorf("y on a non-mutating plan should close the overlay; still open")
+	}
+}
