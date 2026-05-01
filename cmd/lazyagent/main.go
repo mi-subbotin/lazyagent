@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -20,17 +22,25 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/sources/gemini"
 	"github.com/mi-subbotin/lazyagent/internal/sources/lazyagent"
 	"github.com/mi-subbotin/lazyagent/internal/sources/mock"
+	"github.com/mi-subbotin/lazyagent/internal/state"
 	"github.com/mi-subbotin/lazyagent/internal/store"
 	"github.com/mi-subbotin/lazyagent/internal/tui"
+	"github.com/mi-subbotin/lazyagent/internal/updates"
 )
 
 // version, commit and date are filled in at release time by goreleaser
 // via -ldflags. `dev` is the placeholder for `go run` / `go install`
 // builds where no metadata is wired up.
+//
+// installSource (PRI-19) records how the binary was built so the update
+// banner can suggest the right upgrade command. GoReleaser bakes "brew"
+// in for tap builds; everything else falls back to go-install detection
+// (binary path under $GOPATH/bin) or "unknown".
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	version       = "dev"
+	commit        = "none"
+	date          = "unknown"
+	installSource = ""
 )
 
 func main() {
@@ -90,6 +100,7 @@ func main() {
 	flag.BoolVar(verbose, "v", false, "alias for --verbose")
 	logFile := flag.String("log-file", "", "override the log file path (defaults to logging.file from config)")
 	logFormat := flag.String("log-format", "", "log format: text or json (defaults to logging.format from config)")
+	noUpdateCheck := flag.Bool("no-update-check", false, "skip the weekly GitHub releases check (PRI-19)")
 	flag.Parse()
 
 	if *showVersion {
@@ -177,11 +188,93 @@ func main() {
 	}
 
 	m := tui.New(srcs, projectDir)
+	m.SetInstallSource(detectInstallSource())
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	// PRI-19: spawn the weekly update poll in the background. The
+	// goroutine uses Program.Send to deliver UpdateAvailableMsg into
+	// the model — Bubble Tea is concurrency-safe for that. The check
+	// is gated by `[updates] notify` and `--no-update-check`, and
+	// piggy-backs on the same state.json the rest of the TUI uses.
+	if cfg.Updates.Notify && !*noUpdateCheck {
+		go runUpdateCheck(p, cfg.Updates.CheckIntervalDays, version)
+	}
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "lazyagent:", err)
 		os.Exit(1)
 	}
+}
+
+// runUpdateCheck polls api.github.com/releases/latest at most once per
+// intervalDays. The function is intentionally silent on the success
+// path when there's nothing newer — the user only sees output when an
+// update banner appears in the TUI. Errors land in the slog log file
+// at warn level so power users can chase a misconfigured corp proxy.
+func runUpdateCheck(p *tea.Program, intervalDays int, current string) {
+	st, err := state.Load()
+	if err != nil {
+		slog.Warn("update check: state load failed", "err", err)
+		return
+	}
+	now := time.Now()
+	if !updates.ShouldCheck(st, intervalDays, now) {
+		// Cache is fresh — surface the previously-seen version if it
+		// is still newer than the running build. Lets a returning user
+		// see the banner immediately rather than waiting another week.
+		if updates.IsNewer(current, st.LatestKnownVersion) && !updates.IsBannerDismissed(st, st.LatestKnownVersion, now) {
+			p.Send(tui.UpdateAvailableMsg{Version: st.LatestKnownVersion})
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rel, err := updates.FetchLatest(ctx, updates.DefaultOwner, updates.DefaultRepo)
+	if err != nil {
+		if !errors.Is(err, updates.ErrNoReleases) {
+			slog.Warn("update check: github request failed", "err", err)
+		}
+		return
+	}
+	updated, saveErr := updates.RecordCheck(st, rel.Version, now)
+	if saveErr != nil {
+		slog.Warn("update check: state save failed", "err", saveErr)
+	}
+	if !updates.IsNewer(current, rel.Version) {
+		return
+	}
+	if updates.IsBannerDismissed(updated, rel.Version, now) {
+		return
+	}
+	p.Send(tui.UpdateAvailableMsg{Version: rel.Version, URL: rel.URL})
+}
+
+// detectInstallSource returns "brew" when a goreleaser-built binary
+// baked the marker in via ldflag, "go-install" when the binary lives
+// under $GOPATH/bin, or "unknown" otherwise. Used by the PRI-19 banner
+// to print the right upgrade hint.
+func detectInstallSource() string {
+	if installSource != "" {
+		return installSource
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "unknown"
+	}
+	gopath := os.Getenv("GOPATH")
+	if gopath == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			gopath = filepath.Join(home, "go")
+		}
+	}
+	if gopath != "" {
+		gobin := filepath.Join(gopath, "bin")
+		if abs, err := filepath.Abs(exe); err == nil && filepath.Dir(abs) == gobin {
+			return "go-install"
+		}
+	}
+	return "unknown"
 }
 
 // loadConfigOrWarn reads ~/.lazyagent/config.toml and prints any non-fatal

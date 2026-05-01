@@ -205,7 +205,25 @@ type Model struct {
 	// chooser, conflict prompts and the final summary — share state
 	// in this struct.
 	installing *installOverlay
+
+	// PRI-19: update banner. updateAvailable carries the version the
+	// background goroutine fetched from GitHub when it is strictly
+	// newer than the running build; updateURL is the release page;
+	// updateBannerOff is set after the user dismisses it for the day.
+	// installSource (brew / go-install / unknown) is plumbed in by
+	// main.go so the banner can suggest the right upgrade command.
+	updateAvailable string
+	updateURL       string
+	updateBannerOff bool
+	installSource   string
 }
+
+// SetInstallSource records how the binary was installed ("brew",
+// "go-install", "unknown"). main.go calls this once before tea.Run so
+// the update banner can suggest the right upgrade command. Stored on
+// Model rather than passed through New so additional flags do not turn
+// the constructor into a kitchen sink.
+func (m *Model) SetInstallSource(s string) { m.installSource = s }
 
 func New(srcs []sources.Source, projectDir string) Model {
 	st, _ := state.Load()
@@ -269,6 +287,15 @@ type externalEditDoneMsg struct {
 type resumeDoneMsg struct {
 	path string
 	err  error
+}
+
+// UpdateAvailableMsg is sent by the background update-check goroutine
+// in main.go when GitHub reports a newer release than the running
+// build. Exported so cmd/lazyagent can build it without re-implementing
+// the type.
+type UpdateAvailableMsg struct {
+	Version string
+	URL     string
 }
 
 func (m Model) Init() tea.Cmd {
@@ -339,6 +366,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildTree()
 		return m, nil
 
+	case UpdateAvailableMsg:
+		// PRI-19: background poll found a newer release. We re-check
+		// the dismissal-for-today predicate here (not just in main.go)
+		// because the user may have hit a key between fetch and arrival
+		// — a tap during the fetch shouldn't surface the banner.
+		st, _ := state.Load()
+		now := time.Now()
+		if !isUpdateBannerDismissed(st, msg.Version, now) {
+			m.updateAvailable = msg.Version
+			m.updateURL = msg.URL
+			m.updateBannerOff = false
+		}
+		return m, nil
+
 	case externalEditDoneMsg:
 		// $EDITOR exited. Drop any cached glamour rendering for this path
 		// (across widths) and reload sources so frontmatter changes
@@ -405,6 +446,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd()
 
 	case tea.KeyMsg:
+		// PRI-19: any key suppresses the update banner for the rest of
+		// the current calendar day. The dismissal also persists, so a
+		// user who hits "j" once doesn't keep seeing it on every relaunch.
+		// We swallow the keypress only for the dismissal side effect —
+		// the rest of the handler still processes it, so a single tap
+		// both hides the banner AND moves the cursor.
+		if m.updateAvailable != "" && !m.updateBannerOff {
+			m.updateBannerOff = true
+			if st, err := state.Load(); err == nil {
+				st.UpdateBannerDismissedFor = m.updateAvailable
+				st.UpdateBannerDismissedDate = time.Now().Format("2006-01-02")
+				_ = state.Save(st)
+			}
+		}
+
 		// Help overlay swallows everything: any key closes it.
 		if m.helpOpen {
 			m.helpOpen = false
@@ -1562,7 +1618,11 @@ func (m Model) View() string {
 	const panelBorderH = 2
 
 	availW := w - marginLeft - marginRight
-	availH := h - marginTop - marginBottom - statusLines
+	bannerLines := 0
+	if m.updateAvailable != "" && !m.updateBannerOff {
+		bannerLines = 1
+	}
+	availH := h - marginTop - marginBottom - statusLines - bannerLines
 	if availW < 40 {
 		availW = 40
 	}
@@ -1673,12 +1733,26 @@ func (m Model) View() string {
 	}
 	status := statusStyle.Render(truncRunes(statusLine, availW))
 
+	// PRI-19: render the update banner directly above the status line
+	// when the background poll found a newer release and the user has
+	// not silenced it yet. updateBannerOff flips on the first key press
+	// of the day so we honour the dismissal for the rest of the run too.
+	var banner string
+	if m.updateAvailable != "" && !m.updateBannerOff {
+		banner = renderUpdateBanner(m.updateAvailable, m.updateURL, m.installSource, availW)
+	}
+
 	// Build the final output with explicit margins. lipgloss Padding/Margin
 	// on the outer style doesn't reliably translate into visible whitespace
 	// over AltScreen for multi-line content, so we do it by hand: blank
 	// lines for the top margin, and a left-side pad on every visible row.
 	// Total rows must equal h exactly — too many and the top scrolls off.
-	stacked := lipgloss.JoinVertical(lipgloss.Left, body, status)
+	var stacked string
+	if banner != "" {
+		stacked = lipgloss.JoinVertical(lipgloss.Left, body, banner, status)
+	} else {
+		stacked = lipgloss.JoinVertical(lipgloss.Left, body, status)
+	}
 	pad := strings.Repeat(" ", marginLeft)
 	lines := strings.Split(stacked, "\n")
 	padded := make([]string, 0, marginTop+len(lines)+marginBottom)

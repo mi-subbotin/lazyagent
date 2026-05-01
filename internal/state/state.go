@@ -24,6 +24,18 @@ import (
 // future versions can add fields without touching old files.
 type State struct {
 	HidePrivateSessions bool `json:"hide_private_sessions,omitempty"`
+
+	// PRI-19: weekly update check. LastUpdateCheckAt is unix seconds of
+	// the last successful poll against the GitHub releases API;
+	// LatestKnownVersion is the most recent tag we saw (with the leading
+	// "v" stripped). UpdateBannerDismissedFor + UpdateBannerDismissedDate
+	// remember a per-day suppression so a key tap silences the banner
+	// for the current calendar day, but a brand-new version (or a fresh
+	// day) brings it back.
+	LastUpdateCheckAt            int64  `json:"last_update_check_at,omitempty"`
+	LatestKnownVersion           string `json:"latest_known_version,omitempty"`
+	UpdateBannerDismissedFor     string `json:"update_banner_dismissed_for,omitempty"`
+	UpdateBannerDismissedDate    string `json:"update_banner_dismissed_date,omitempty"`
 }
 
 // Path returns the absolute path to state.json. We co-locate it with
