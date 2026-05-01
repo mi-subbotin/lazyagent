@@ -34,10 +34,23 @@ hero so the layout already matches the eventual design.
   <a href="#quickstart"><img alt="Quickstart" src="https://img.shields.io/badge/%E2%9A%A1_quickstart-3949AB?style=for-the-badge"></a>
 </p>
 
+<p align="center">
+  <a href="assets/tui-overview.png"><img alt="lazyagent — split-pane TUI showing skills, agents, MCP servers and memory grouped by tool" src="assets/tui-overview.png" width="860"></a>
+</p>
+
+<p align="center"><sub>Split-pane tree on the left, glamour-rendered detail on the right. <code>j</code>/<code>k</code> to navigate, <code>tab</code> to drill in, <code>?</code> for help.</sub></p>
+
+> **TL;DR** — One TUI for every Claude Code, Codex and Gemini CLI artifact in your home directory. Browse, edit, copy across tools, share a single canonical version into all three, install skills/agents from any public GitHub repo. Local-first, no telemetry, brew-installable.
+
 ---
 
 ## 📣 News
 
+- **2026-05-01** — `PRI-26` Hooks are now a first-class Kind — Claude `PreToolUse` / `PostToolUse` / `SessionStart` entries in your `settings.json` show up in the tree with a "⚠ runs shell" warning so you see what will execute before it does.
+- **2026-05-01** — `PRI-10` `~/.lazyagent/ignore` keeps work / corporate trees out of the global indexer. Manage it from the CLI: `lazyagent ignore add '~/work/'`.
+- **2026-05-01** — `PRI-19` Weekly GitHub releases check + amber "↑ vX.Y.Z available" footer when your build is behind. Disable with `[updates] notify = false` or `--no-update-check`.
+- **2026-05-01** — `PRI-4` Global project indexer + `A` toggle to fold every discovered project's local items into the same tree. Cache lives at `~/.lazyagent/index.json`.
+- **2026-05-01** — `PRI-20` First-run empty-state with an ASCII logo + per-section "no \<kind\> yet" placeholders so a fresh install no longer paints a blank panel.
 - **2026-04-30** — `PRI-3` Install skills / agents / prompts from any public GitHub repo: `i` in the TUI or `lazyagent install <url>` from the shell. `U` updates an installed item to the origin's latest sha.
 - **2026-04-30** — `PRI-18` Broken frontmatter is now surfaced with an `(invalid)` badge instead of being silently skipped, with the diagnostic shown in the detail panel.
 - **2026-04-30** — `PRI-21` Shell completions for bash / zsh / fish; Homebrew installs them automatically, otherwise `lazyagent completion <shell>` prints the script.
@@ -115,6 +128,7 @@ Local-scope rows show only when `lazyagent` is launched from a directory that co
 | MCP servers                                |   ✓    |   ✓   |   ✓    |
 | Prompts / slash commands                   |   ✓    |   ✓   |   ✓ ²  |
 | Memory file (`CLAUDE.md`/`AGENTS.md`/...)  |   ✓    |   ✓   |   ✓    |
+| Hooks (PreToolUse / PostToolUse / …)       |   ✓ ⁴  |   —   |   —    |
 | Cross-tool copy (`x`)                      |   ✓    |   ✓   |   ✓    |
 | Inline edit (`E`) + external editor (`e`)  |   ✓    |   ✓   |   ✓    |
 | Shared canonical store + projection (`s`)  |   ✓    |   ✓ ³ |   ✓ ³  |
@@ -122,15 +136,19 @@ Local-scope rows show only when `lazyagent` is launched from a directory that co
 
 ¹ Codex agents are stored as `[profiles.<name>]` entries in `config.toml`; cross-tool copy converts the body, lossy in either direction.<br>
 ² Gemini commands are TOML; cross-copy from Claude/Codex (markdown) requires a frontmatter → TOML rewrite.<br>
-³ Codex agents and Gemini prompts can't be shared yet without format conversion — the share picker greys them out.
+³ Codex agents and Gemini prompts can't be shared yet without format conversion — the share picker greys them out.<br>
+⁴ Codex / Gemini hook adapters are deferred — formats need verification on a live install (PRI-57).
 
 <p align="center">
-  <img src="assets/tui-overview.png" alt="lazyagent — main view: tree of tools and kinds on the left, rendered SKILL.md detail on the right" width="900">
+  <img src="assets/detail-zoom.png" alt="lazyagent — fullscreen detail view of a SKILL.md, glamour-styled markdown body" width="860">
 </p>
 
+<p align="center"><sub>Press <code>tab</code> on a leaf to zoom into a glamour-rendered detail view.</sub></p>
+
 <!--
-PRI-15: replace this static shot with assets/demo.gif (or an asciinema
-embed) once a demo recording lands.
+PRI-15: replace the hero image with assets/demo.gif (or an asciinema
+embed) once a demo recording lands. The two static shots stay as
+fallbacks for the GitHub crawler that doesn't render videos.
 -->
 
 ## Keys
