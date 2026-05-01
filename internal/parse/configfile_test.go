@@ -97,6 +97,94 @@ func TestDeleteEntireArrayElement(t *testing.T) {
 	}
 }
 
+func TestSetArrayIndexReplace(t *testing.T) {
+	m := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{"matcher": "Bash", "hooks": []any{
+					map[string]any{"command": "first"},
+					map[string]any{"command": "second"},
+				}},
+			},
+		},
+	}
+	Set(m, "hooks/PreToolUse/0/hooks/1", map[string]any{"command": "replaced"})
+	got, _ := Get(m, "hooks/PreToolUse/0/hooks/1/command")
+	if got != "replaced" {
+		t.Errorf("Set replace at idx 1 = %v, want replaced", got)
+	}
+	got2, _ := Get(m, "hooks/PreToolUse/0/hooks/0/command")
+	if got2 != "first" {
+		t.Errorf("sibling at idx 0 disturbed: %v", got2)
+	}
+}
+
+func TestSetArrayAppendAtLen(t *testing.T) {
+	m := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{"matcher": "Bash"},
+			},
+		},
+	}
+	Set(m, "hooks/PreToolUse/1", map[string]any{"matcher": "Read"})
+	arr, _ := Get(m, "hooks/PreToolUse")
+	asSlice, ok := arr.([]any)
+	if !ok || len(asSlice) != 2 {
+		t.Fatalf("after append len = %d, want 2 (got %T)", len(asSlice), arr)
+	}
+	if asSlice[1].(map[string]any)["matcher"] != "Read" {
+		t.Errorf("appended element wrong: %v", asSlice[1])
+	}
+}
+
+func TestSetArrayOutOfRangeNoOp(t *testing.T) {
+	m := map[string]any{"a": []any{"x"}}
+	Set(m, "a/9", "noop")
+	if got, _ := Get(m, "a/9"); got != nil {
+		t.Errorf("out-of-range Set should be no-op, got %v", got)
+	}
+	if got, _ := Get(m, "a/0"); got != "x" {
+		t.Errorf("existing element disturbed: %v", got)
+	}
+}
+
+func TestAppendCreatesArrayWhenMissing(t *testing.T) {
+	m := map[string]any{}
+	if !Append(m, "hooks/PreToolUse", map[string]any{"matcher": "Bash"}) {
+		t.Fatal("Append should report success")
+	}
+	arr, _ := Get(m, "hooks/PreToolUse")
+	if len(arr.([]any)) != 1 {
+		t.Errorf("array len after Append = %d, want 1", len(arr.([]any)))
+	}
+}
+
+func TestAppendExtendsExistingArray(t *testing.T) {
+	m := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{map[string]any{"matcher": "Bash"}},
+		},
+	}
+	if !Append(m, "hooks/PreToolUse", map[string]any{"matcher": "Read"}) {
+		t.Fatal("Append should succeed on existing array")
+	}
+	arr, _ := Get(m, "hooks/PreToolUse")
+	if len(arr.([]any)) != 2 {
+		t.Errorf("len after Append = %d, want 2", len(arr.([]any)))
+	}
+}
+
+func TestAppendRefusesNonSlice(t *testing.T) {
+	m := map[string]any{"hooks": "not-a-slice"}
+	if Append(m, "hooks", map[string]any{}) {
+		t.Error("Append onto a non-slice should fail")
+	}
+	if m["hooks"] != "not-a-slice" {
+		t.Errorf("non-slice value mutated to %v", m["hooks"])
+	}
+}
+
 func TestDeleteMapKeyUnchanged(t *testing.T) {
 	m := map[string]any{"a": "b", "c": "d"}
 	if !Delete(m, "a") {

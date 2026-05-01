@@ -1,33 +1,17 @@
-// Hooks adapter for Claude Code (PRI-26).
+// Hooks adapter for Gemini CLI (PRI-57).
 //
-// Hooks live inside the same settings.json files Claude already uses
-// for MCP servers: `~/.claude/settings.json` (global) and
-// `<project>/.claude/settings.json` (local). The shape is:
-//
-//   {
-//     "hooks": {
-//       "PreToolUse": [
-//         {"matcher": "Bash", "hooks": [{"type": "command", "command": "...", "timeout": 5}]}
-//       ],
-//       "PostToolUse": [...],
-//       "SessionStart": [...]
-//     }
-//   }
-//
-// We emit one Item per inner hook entry. The ConfigKey carries the
-// full path inside the JSON — including the second `hooks` key under
-// the matcher group — so parse.Get / Delete / Set walk straight to the
-// element without any translation:
+// Gemini stores hooks alongside its other settings in
+// ~/.gemini/settings.json (global) and <project>/.gemini/settings.json
+// (local). The expected shape is the same `hooks.<event>[i].hooks[j]`
+// nested-array structure Claude uses, so we share the rendering and
+// ConfigKey conventions:
 //
 //   hooks/<event>/<matcher-idx>/hooks/<hook-idx>
 //
-// Name is "<event>:<matcher>" — events without a matcher show just the
-// event. Description is the first line of the command so the user can
-// scan the list without expanding each row. The full command lives in
-// Body and the detail panel surfaces a "⚠ runs shell" warning above
-// it so the security implication is unmissable.
+// If Gemini ends up adopting a different on-disk shape we'll branch
+// here; for now Claude's adapter is the reference implementation.
 
-package claude
+package gemini
 
 import (
 	"encoding/json"
@@ -39,11 +23,6 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 )
 
-// scanHooksFile reads a Claude settings.json and emits one Item per
-// inner hook entry under `hooks.<event>[i].hooks[j]`. Missing files,
-// missing sections and malformed JSON all return nil — the user is
-// allowed to have any subset configured, and a parse error in one
-// section must not blank out the rest of the tree.
 func scanHooksFile(path string, scope model.Scope) []model.Item {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -89,7 +68,7 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 				}
 				configKey := fmt.Sprintf("hooks/%s/%d/hooks/%d", event, matcherIdx, hookIdx)
 				out = append(out, model.Item{
-					Origin:      model.OriginClaude,
+					Origin:      model.OriginGemini,
 					Kind:        model.KindHook,
 					Scope:       scope,
 					Name:        name,
@@ -112,9 +91,6 @@ func scanHooksFile(path string, scope model.Scope) []model.Item {
 	return out
 }
 
-// hookDescription returns a single-line summary of the command so the
-// list view stays readable. Long commands are truncated; multi-line
-// commands lose everything past the first non-blank line.
 func hookDescription(command string) string {
 	for _, ln := range strings.Split(command, "\n") {
 		t := strings.TrimSpace(ln)
@@ -129,10 +105,6 @@ func hookDescription(command string) string {
 	return ""
 }
 
-// hookBody renders a markdown preview for the detail panel. The
-// "⚠ runs shell" warning is plain text so it shows up regardless of
-// whether glamour is on or off; the styled red highlight comes from
-// the renderer (tui.styles).
 func hookBody(event, matcher string, inner map[string]any) string {
 	var b strings.Builder
 	b.WriteString("# Hook\n\n")

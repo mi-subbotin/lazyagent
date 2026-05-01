@@ -177,6 +177,99 @@ func TestMove_CopyThenDelete(t *testing.T) {
 	}
 }
 
+func TestCopy_HookEntry_GlobalToLocal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "proj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	globalSettings := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	body := `{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "echo first"}, {"command": "echo second"}]}]}}`
+	if err := os.WriteFile(globalSettings, []byte(body), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindHook,
+		Scope:     model.ScopeGlobal,
+		Storage:   model.StorageEntry,
+		Path:      globalSettings,
+		ConfigKey: "hooks/PreToolUse/0/hooks/1",
+	}
+	if err := Copy(it, project); err != nil {
+		t.Fatalf("Copy hook: %v", err)
+	}
+
+	target := filepath.Join(project, ".claude", "settings.json")
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, `"echo second"`) {
+		t.Errorf("target should contain copied hook command:\n%s", s)
+	}
+	if strings.Contains(s, `"echo first"`) {
+		t.Errorf("target should not contain sibling hook (only the selected one):\n%s", s)
+	}
+	if !strings.Contains(s, `"matcher"`) {
+		t.Errorf("target should preserve matcher field:\n%s", s)
+	}
+}
+
+func TestCopy_HookEntry_AppendsToExistingTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Source = local settings.json under a project; target = global ~/.claude/settings.json
+	project := filepath.Join(home, "proj")
+	localSettings := filepath.Join(project, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(localSettings), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.WriteFile(localSettings, []byte(`{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "added"}]}]}}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Pre-existing global file with a different hook already in place
+	globalSettings := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.WriteFile(globalSettings, []byte(`{"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"command": "preexisting"}]}]}}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindHook,
+		Scope:     model.ScopeLocal,
+		Storage:   model.StorageEntry,
+		Path:      localSettings,
+		ConfigKey: "hooks/PreToolUse/0/hooks/0",
+	}
+	if err := Copy(it, project); err != nil {
+		t.Fatalf("Copy hook: %v", err)
+	}
+
+	got, err := os.ReadFile(globalSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, `"added"`) {
+		t.Errorf("target missing newly copied hook:\n%s", s)
+	}
+	if !strings.Contains(s, `"preexisting"`) {
+		t.Errorf("target lost pre-existing hook:\n%s", s)
+	}
+}
+
 func TestCopy_LocalNeedsProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	it := model.Item{

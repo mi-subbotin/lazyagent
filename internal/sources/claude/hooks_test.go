@@ -58,9 +58,9 @@ func TestScanHooksFileBasic(t *testing.T) {
 		byKey[it.ConfigKey] = it
 	}
 
-	bash, ok := byKey["hooks/PreToolUse/0/0"]
+	bash, ok := byKey["hooks/PreToolUse/0/hooks/0"]
 	if !ok {
-		t.Fatalf("missing hooks/PreToolUse/0/0; keys: %v", keys(byKey))
+		t.Fatalf("missing hooks/PreToolUse/0/hooks/0; keys: %v", keys(byKey))
 	}
 	if bash.Name != "PreToolUse:Bash" {
 		t.Errorf("Name = %q, want PreToolUse:Bash", bash.Name)
@@ -75,17 +75,17 @@ func TestScanHooksFileBasic(t *testing.T) {
 		t.Errorf("Meta[matcher] = %q, want Bash", bash.Meta["matcher"])
 	}
 
-	read1, ok := byKey["hooks/PreToolUse/1/0"]
+	read1, ok := byKey["hooks/PreToolUse/1/hooks/0"]
 	if !ok {
-		t.Fatalf("missing hooks/PreToolUse/1/0")
+		t.Fatalf("missing hooks/PreToolUse/1/hooks/0")
 	}
 	if read1.Name != "PreToolUse:Read[0]" {
 		t.Errorf("Name = %q, want PreToolUse:Read[0] (multi-hook disambiguation)", read1.Name)
 	}
 
-	session, ok := byKey["hooks/SessionStart/0/0"]
+	session, ok := byKey["hooks/SessionStart/0/hooks/0"]
 	if !ok {
-		t.Fatalf("missing hooks/SessionStart/0/0")
+		t.Fatalf("missing hooks/SessionStart/0/hooks/0")
 	}
 	if session.Name != "SessionStart" {
 		t.Errorf("Name = %q, want SessionStart (no matcher)", session.Name)

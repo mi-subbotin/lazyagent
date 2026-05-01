@@ -150,16 +150,67 @@ func step(node any, segment string) (any, bool) {
 
 // Set assigns v at the given key path, creating intermediate maps where
 // necessary. Existing non-map values along the path are overwritten.
+//
+// Array-aware: a numeric leaf segment under a []any parent replaces the
+// element at that index; a numeric segment exactly equal to len(arr)
+// appends. Out-of-range numeric segments are no-ops. Intermediate
+// numeric segments descend into arrays the same way Get / Delete do —
+// no auto-creation of slice intermediates.
 func Set(m map[string]any, keyPath string, v any) {
 	parts := SplitKey(keyPath)
 	if len(parts) == 0 {
 		return
 	}
+	if len(parts) == 1 {
+		m[parts[0]] = v
+		return
+	}
+	parent, ok := walkToParent(m, parts[:len(parts)-1])
+	if !ok {
+		return
+	}
+	leaf := parts[len(parts)-1]
+	switch p := parent.(type) {
+	case map[string]any:
+		p[leaf] = v
+	case *sliceRef:
+		idx, err := strconv.Atoi(leaf)
+		if err != nil || idx < 0 || idx > len(*p.s) {
+			return
+		}
+		if idx == len(*p.s) {
+			*p.s = append(*p.s, v)
+		} else {
+			(*p.s)[idx] = v
+		}
+		p.commit()
+	}
+}
+
+// Append extends the []any at keyPath with v, creating intermediate maps
+// and the slice itself if missing. If a non-slice value already lives at
+// keyPath it is left alone and Append reports false. Useful when the
+// caller doesn't know the array's current length and just wants to add
+// an entry (e.g. inserting a new hook matcher under hooks/<event>).
+func Append(m map[string]any, keyPath string, v any) bool {
+	parts := SplitKey(keyPath)
+	if len(parts) == 0 {
+		return false
+	}
 	cur := m
 	for i, p := range parts {
 		if i == len(parts)-1 {
-			cur[p] = v
-			return
+			existing, present := cur[p]
+			if !present {
+				cur[p] = []any{v}
+				return true
+			}
+			arr, ok := existing.([]any)
+			if !ok {
+				return false
+			}
+			cur[p] = append(arr, v)
+			return true
 		}
 		next, ok := cur[p].(map[string]any)
 		if !ok {
@@ -168,6 +219,7 @@ func Set(m map[string]any, keyPath string, v any) {
 		}
 		cur = next
 	}
+	return false
 }
 
 // Delete removes the entry at the given key path. Returns true if a
