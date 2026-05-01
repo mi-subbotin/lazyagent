@@ -42,13 +42,14 @@ type placePicker struct {
 
 // placeCell is one (Origin, Scope) checkbox in the picker matrix.
 // Disabled cells display the `reason` next to the cell instead of the
-// checkbox; user input on them is ignored. Lossy cells are disabled in
-// v1 — see PRI-68 for the plan to re-enable them with library-backed
-// generated projections.
+// checkbox; user input on them is ignored. Lossy cells stay enabled
+// after PRI-68 but carry a `lossy` flag the renderer adds as a
+// suffix on the row's reason column.
 type placeCell struct {
 	target  actions.ProjectionTarget
 	enabled bool
 	checked bool
+	lossy   bool
 	reason  string
 }
 
@@ -80,12 +81,13 @@ func newPlacePicker(it model.Item, projectDir string) (*placePicker, error) {
 			case isEntry && !actions.CanPlaceEntryTo(it, o):
 				cell.reason = "cross-tool entry: PRI-68"
 			case !isEntry && !actions.CanPlaceTo(it.Kind, o):
-				cell.reason = "needs format conversion (PRI-68)"
+				cell.reason = "no projection for this combo"
 			case s == model.ScopeLocal && projectDir == "":
 				cell.reason = "no project local scope"
 			default:
 				cell.enabled = true
 				cell.checked = current[target]
+				cell.lossy = !isEntry && actions.IsLossyProjection(it.Kind, o)
 			}
 			cells[r][c] = cell
 		}
@@ -284,9 +286,13 @@ func placePickerText(p placePicker) string {
 			fmt.Fprintf(&b, " %s%-7s", cursor, mark)
 		}
 		// Disabled-cell reason — append once per row if any cell
-		// disabled with a reason; keeps the matrix tight.
+		// disabled with a reason; keeps the matrix tight. Lossy cells
+		// stay enabled but get a `(lossy)` annotation so users know
+		// edits at the target don't survive Resync canonical-wins.
 		if reason := firstReason(row); reason != "" {
 			b.WriteString("  — " + reason)
+		} else if anyLossy(row) {
+			b.WriteString("  — (lossy)")
 		}
 		b.WriteString("\n")
 	}
@@ -301,6 +307,15 @@ func firstReason(row []placeCell) string {
 		}
 	}
 	return ""
+}
+
+func anyLossy(row []placeCell) bool {
+	for _, c := range row {
+		if c.lossy {
+			return true
+		}
+	}
+	return false
 }
 
 func placeConfirmText(p placePicker) string {

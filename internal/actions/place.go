@@ -106,6 +106,12 @@ func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
 		}
 	}
 	for _, t := range add {
+		if isLossyProjection(it.Kind, t.Origin) {
+			if err := projectLossy(it, source, t, opts.ProjectDir); err != nil {
+				return fmt.Errorf("project to %s: %w", t, err)
+			}
+			continue
+		}
 		target, err := projectionPath(it.Kind, it.Name, t.Origin, t.Scope, opts.ProjectDir)
 		if err != nil {
 			return fmt.Errorf("projection path for %s: %w", t, err)
@@ -116,6 +122,12 @@ func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
 		}
 	}
 	for _, t := range remove {
+		if isLossyProjection(it.Kind, t.Origin) {
+			if err := unprojectLossy(it, t, opts.ProjectDir); err != nil {
+				return fmt.Errorf("unproject %s: %w", t, err)
+			}
+			continue
+		}
 		target, err := projectionPath(it.Kind, it.Name, t.Origin, t.Scope, opts.ProjectDir)
 		if err != nil {
 			return fmt.Errorf("projection path for %s: %w", t, err)
@@ -178,6 +190,13 @@ func CurrentPlaceProjections(it model.Item, projectDir string) []ProjectionTarge
 			continue
 		}
 		for _, s := range scopes {
+			pt := ProjectionTarget{Origin: t, Scope: s}
+			if isLossyProjection(it.Kind, t) {
+				if hasLossyProjection(it, pt, projectDir) {
+					out = append(out, pt)
+				}
+				continue
+			}
 			p, err := projectionPath(it.Kind, it.Name, t, s, projectDir)
 			if err != nil {
 				continue
@@ -186,7 +205,7 @@ func CurrentPlaceProjections(it model.Item, projectDir string) []ProjectionTarge
 				continue
 			}
 			if store.CanonicalItemDir(p) == canonical {
-				out = append(out, ProjectionTarget{Origin: t, Scope: s})
+				out = append(out, pt)
 			}
 		}
 	}
@@ -290,6 +309,12 @@ func placeConflicts(it model.Item, canonical string, add []ProjectionTarget, pro
 
 	var out []ShareConflict
 	for _, t := range add {
+		if isLossyProjection(it.Kind, t.Origin) {
+			if c, ok := lossyConflict(it, t, projectDir); ok {
+				out = append(out, c)
+			}
+			continue
+		}
 		target, err := projectionPath(it.Kind, it.Name, t.Origin, t.Scope, projectDir)
 		if err != nil {
 			continue
@@ -319,6 +344,35 @@ func placeConflicts(it model.Item, canonical string, add []ProjectionTarget, pro
 		out = append(out, ShareConflict{Target: t.Origin, Path: target, Kind: kind})
 	}
 	return out
+}
+
+// lossyConflict reports a conflict for one lossy target cell. For
+// codex profiles: the entry key already resolves to something. For
+// gemini TOML: the file already exists. Either way overwriting is the
+// only path forward — Place doesn't try to round-trip user edits back
+// into the canonical .md (Resync canonical-wins is the intended UX).
+func lossyConflict(it model.Item, t ProjectionTarget, projectDir string) (ShareConflict, bool) {
+	switch {
+	case it.Kind == model.KindAgent && t.Origin == model.OriginCodex:
+		path, key, err := codexProfilePath(it.Name, t.Scope, projectDir)
+		if err != nil {
+			return ShareConflict{}, false
+		}
+		if _, _, err := parse.ReadEntry(path, key); err != nil {
+			return ShareConflict{}, false
+		}
+		return ShareConflict{Target: t.Origin, Path: path + " :: " + key, Kind: "entry"}, true
+	case it.Kind == model.KindPrompt && t.Origin == model.OriginGemini:
+		path, err := geminiCommandPath(it.Name, t.Scope, projectDir)
+		if err != nil {
+			return ShareConflict{}, false
+		}
+		if _, err := os.Stat(path); err != nil {
+			return ShareConflict{}, false
+		}
+		return ShareConflict{Target: t.Origin, Path: path, Kind: "file"}, true
+	}
+	return ShareConflict{}, false
 }
 
 // promoteToLibrary moves the item's bytes into the library and

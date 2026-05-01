@@ -449,11 +449,12 @@ func TestPlace_EntryReducingTargetsRemovesProjection(t *testing.T) {
 	}
 }
 
-// Lossy combos (agent → codex profile, prompt → gemini toml) are
-// out of scope for Place v1; the picker is expected to grey them out
-// or fall back to CrossCopy. Verify Place rejects them with a clear
-// error before any disk work.
-func TestPlace_RejectsLossyAgentToCodex(t *testing.T) {
+// PRI-68: agent → codex profile is now a supported lossy projection.
+// Place reads the canonical agent.md, parses frontmatter+body, and
+// upserts a [profiles.<name>] entry into ~/.codex/config.toml. The
+// generated entry must carry the body as `instructions` and surface
+// any frontmatter `model` field; the canonical .md stays untouched.
+func TestPlace_LossyAgentToCodexGeneratesProfileEntry(t *testing.T) {
 	home := t.TempDir()
 	lib := canonicalTempDir(t)
 	t.Setenv("HOME", home)
@@ -463,7 +464,8 @@ func TestPlace_RejectsLossyAgentToCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	bodyPath := filepath.Join(home, ".claude", "agents", "reviewer.md")
-	if err := os.WriteFile(bodyPath, []byte("---\nname: reviewer\n---\nbody\n"), 0o644); err != nil {
+	body := "---\nname: reviewer\nmodel: claude-opus-4-7\n---\nReview PRs carefully.\n"
+	if err := os.WriteFile(bodyPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	it := model.Item{
@@ -475,13 +477,120 @@ func TestPlace_RejectsLossyAgentToCodex(t *testing.T) {
 		Storage: model.StorageFile,
 	}
 
-	err := Place(it, []ProjectionTarget{{model.OriginCodex, model.ScopeGlobal}}, PlaceOpts{})
-	if !errors.Is(err, ErrPlaceUnsupported) {
-		t.Fatalf("want ErrPlaceUnsupported for agent → codex, got %v", err)
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginCodex, model.ScopeGlobal},
 	}
-	// The lossless target stays accepted.
-	if err := Place(it, []ProjectionTarget{{model.OriginGemini, model.ScopeGlobal}}, PlaceOpts{}); err != nil {
-		t.Fatalf("agent → gemini should be accepted: %v", err)
+	if err := Place(it, targets, PlaceOpts{}); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	val, _, err := parseReadEntry(t, configPath, "profiles/reviewer")
+	if err != nil {
+		t.Fatalf("codex profile entry missing: %v", err)
+	}
+	entry, ok := val.(map[string]any)
+	if !ok {
+		t.Fatalf("entry is not a map: %T", val)
+	}
+	if entry["model"] != "claude-opus-4-7" {
+		t.Errorf("model field lost: %v", entry["model"])
+	}
+	if instr, _ := entry["instructions"].(string); !strings.Contains(instr, "Review PRs carefully") {
+		t.Errorf("instructions missing body: %q", instr)
+	}
+}
+
+// PRI-68: prompt → gemini TOML generates a commands/<name>.toml file
+// with description + multi-line prompt. The canonical .md remains
+// untouched; the gemini target is a fresh-write file, not a symlink.
+func TestPlace_LossyPromptToGeminiGeneratesTOML(t *testing.T) {
+	home := t.TempDir()
+	lib := canonicalTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_LIBRARY", lib)
+
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "commands"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := filepath.Join(home, ".claude", "commands", "summarise.md")
+	body := "---\nname: summarise\ndescription: \"summarise diff\"\n---\nSummarise the staged diff.\nKeep it short.\n"
+	if err := os.WriteFile(bodyPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := model.Item{
+		Origin:  model.OriginClaude,
+		Kind:    model.KindPrompt,
+		Scope:   model.ScopeGlobal,
+		Name:    "summarise",
+		Path:    bodyPath,
+		Storage: model.StorageFile,
+	}
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginGemini, model.ScopeGlobal},
+	}
+	if err := Place(it, targets, PlaceOpts{}); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	tomlPath := filepath.Join(home, ".gemini", "commands", "summarise.toml")
+	data, err := os.ReadFile(tomlPath)
+	if err != nil {
+		t.Fatalf("gemini toml missing: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "description = \"summarise diff\"") {
+		t.Errorf("description missing:\n%s", s)
+	}
+	if !strings.Contains(s, "Summarise the staged diff") {
+		t.Errorf("prompt body missing:\n%s", s)
+	}
+	if !strings.Contains(s, "prompt = '''") {
+		t.Errorf("multi-line literal-string syntax expected:\n%s", s)
+	}
+}
+
+// PRI-68: re-running Place with a smaller target set must clean up
+// the lossy projection — the codex profile entry should be deleted
+// and the gemini TOML file removed.
+func TestPlace_LossyReducingTargetsRemovesProjections(t *testing.T) {
+	home := t.TempDir()
+	lib := canonicalTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_LIBRARY", lib)
+
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := filepath.Join(home, ".claude", "agents", "reviewer.md")
+	if err := os.WriteFile(bodyPath, []byte("---\nname: reviewer\n---\nReview\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := skillItem("reviewer", bodyPath, model.OriginClaude, model.ScopeGlobal)
+	it.Kind = model.KindAgent
+	it.Storage = model.StorageFile
+
+	full := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginCodex, model.ScopeGlobal},
+	}
+	if err := Place(it, full, PlaceOpts{}); err != nil {
+		t.Fatalf("first Place: %v", err)
+	}
+
+	canonicalBody := filepath.Join(lib, "agents", "reviewer", "agent.md")
+	it2 := model.Item{
+		Origin: model.OriginShared, Kind: model.KindAgent, Scope: model.ScopeGlobal,
+		Name: "reviewer", Path: canonicalBody, Storage: model.StorageFile,
+	}
+	smaller := []ProjectionTarget{{model.OriginClaude, model.ScopeGlobal}}
+	if err := Place(it2, smaller, PlaceOpts{}); err != nil {
+		t.Fatalf("second Place: %v", err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if _, _, err := parseReadEntry(t, configPath, "profiles/reviewer"); err == nil {
+		t.Errorf("codex profile entry should be gone")
 	}
 }
 
