@@ -87,8 +87,12 @@ func TestResyncToolWins(t *testing.T) {
 		Origin: model.OriginClaude, Kind: model.KindSkill, Scope: model.ScopeGlobal,
 		Name: "foo", Path: filepath.Join(claudeDir, "SKILL.md"), Storage: model.StorageDir,
 	}
-	if err := Share(src, []model.Origin{model.OriginClaude, model.OriginGemini}, false); err != nil {
-		t.Fatalf("Share: %v", err)
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginGemini, model.ScopeGlobal},
+	}
+	if err := Place(src, targets, PlaceOpts{}); err != nil {
+		t.Fatalf("Place: %v", err)
 	}
 
 	// Replace the Gemini symlink with a drifted directory copy so

@@ -45,15 +45,15 @@ var ErrNotDrifted = errors.New("item is not drifted")
 // no-op except for the reprojection step.
 func Resync(it model.Item, dir ResyncDirection) error {
 	if !it.Shared {
-		return fmt.Errorf("%w: %s", ErrShareUnsupported, "not a shared item")
+		return fmt.Errorf("%w: %s", ErrPlaceUnsupported, "not a shared item")
 	}
 	canonical := canonicalForItem(it)
 	if canonical == "" {
-		return fmt.Errorf("%w: %s does not resolve into the shared store", ErrShareUnsupported, it.Path)
+		return fmt.Errorf("%w: %s does not resolve into the shared store", ErrPlaceUnsupported, it.Path)
 	}
 	bodyName, ok := store.CanonicalBodyName(it.Kind)
 	if !ok {
-		return ErrShareUnsupported
+		return ErrPlaceUnsupported
 	}
 	canonicalBody := filepath.Join(canonical, bodyName)
 

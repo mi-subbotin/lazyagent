@@ -115,7 +115,7 @@ Codex
   ...
 Gemini
   ...
-Shared              ← appears once you press `s` to canonicalise an item
+Shared              ← appears once you press `p` to put an item into the library
 ```
 
 Local-scope rows show only when `lazyagent` is launched from a directory that contains tool markers (`.claude/`, `.codex/`, `.gemini/`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.mcp.json`). Otherwise local sections are hidden — there's no project to attach to.

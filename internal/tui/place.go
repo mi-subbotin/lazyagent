@@ -69,6 +69,7 @@ func newPlacePicker(it model.Item, projectDir string) (*placePicker, error) {
 
 	origins := []model.Origin{model.OriginClaude, model.OriginCodex, model.OriginGemini}
 	scopes := []model.Scope{model.ScopeGlobal, model.ScopeLocal}
+	isEntry := it.Storage == model.StorageEntry
 	cells := make([][]placeCell, len(origins))
 	for r, o := range origins {
 		cells[r] = make([]placeCell, len(scopes))
@@ -76,7 +77,9 @@ func newPlacePicker(it model.Item, projectDir string) (*placePicker, error) {
 			target := actions.ProjectionTarget{Origin: o, Scope: s}
 			cell := placeCell{target: target}
 			switch {
-			case !actions.CanPlaceTo(it.Kind, o):
+			case isEntry && !actions.CanPlaceEntryTo(it, o):
+				cell.reason = "cross-tool entry: PRI-68"
+			case !isEntry && !actions.CanPlaceTo(it.Kind, o):
 				cell.reason = "needs format conversion (PRI-68)"
 			case s == model.ScopeLocal && projectDir == "":
 				cell.reason = "no project local scope"
@@ -250,7 +253,11 @@ func placePickerText(p placePicker) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Place %s (%s):\n\n", p.item.Name, p.item.Kind)
-	b.WriteString("Library: yes  (canonical bytes — for optimization)\n\n")
+	if p.item.Storage == model.StorageEntry {
+		b.WriteString("Library: n/a  (entries live inside per-tool config files)\n\n")
+	} else {
+		b.WriteString("Library: yes  (canonical bytes — for optimization)\n\n")
+	}
 
 	// Header row.
 	fmt.Fprintf(&b, "  %-9s", "")

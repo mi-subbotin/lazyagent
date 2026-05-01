@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/store"
 )
 
@@ -327,28 +328,124 @@ func TestPlaceMemory_ProjectsWithRenamePerTool(t *testing.T) {
 	}
 }
 
-// MCP / StorageEntry items have no library layout in v1; Place must
-// reject them without touching disk. The TUI picker is expected to
-// disable the Library row for these and the legacy CrossCopy still
-// handles tool-to-tool entry copies.
-func TestPlace_RejectsStorageEntry(t *testing.T) {
+// MCP / StorageEntry items don't enter the library, but Place still
+// projects them between scopes within the same tool. v1 only supports
+// same-Origin targets; cross-tool MCP routing is tracked under PRI-68.
+// Verifies a Claude/Global MCP can be projected to Claude/Local without
+// promoting any bytes.
+func TestPlace_EntryProjectsBetweenScopesSameTool(t *testing.T) {
 	home := t.TempDir()
 	lib := canonicalTempDir(t)
+	proj := canonicalTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("LAZYAGENT_LIBRARY", lib)
 
+	srcPath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(srcPath, []byte(`{"mcpServers":{"fs":{"command":"node"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	it := model.Item{
 		Origin:    model.OriginClaude,
 		Kind:      model.KindMCP,
 		Scope:     model.ScopeGlobal,
 		Name:      "fs",
-		Path:      filepath.Join(home, ".claude.json"),
+		Path:      srcPath,
+		Storage:   model.StorageEntry,
+		ConfigKey: "mcpServers/fs",
+	}
+
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginClaude, model.ScopeLocal},
+	}
+	if err := Place(it, targets, PlaceOpts{ProjectDir: proj}); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	// Source intact.
+	if _, err := os.Stat(srcPath); err != nil {
+		t.Errorf("source clobbered: %v", err)
+	}
+	// Local projection: <proj>/.mcp.json contains mcpServers/fs.
+	localPath := filepath.Join(proj, ".mcp.json")
+	if _, _, err := parseReadEntry(t, localPath, "mcpServers/fs"); err != nil {
+		t.Errorf("local projection missing: %v", err)
+	}
+	// Library untouched — entries don't use it.
+	if _, err := os.Stat(filepath.Join(lib, "mcp")); !os.IsNotExist(err) {
+		t.Errorf("library should be untouched for entries, err=%v", err)
+	}
+}
+
+// Cross-tool entry projection is out of scope for v1; the picker greys
+// those cells, and Place rejects them with ErrPlaceUnsupported even if
+// a caller bypasses the picker.
+func TestPlace_RejectsCrossToolEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	srcPath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(srcPath, []byte(`{"mcpServers":{"fs":{"command":"node"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindMCP,
+		Scope:     model.ScopeGlobal,
+		Name:      "fs",
+		Path:      srcPath,
 		Storage:   model.StorageEntry,
 		ConfigKey: "mcpServers/fs",
 	}
 	err := Place(it, []ProjectionTarget{{model.OriginCodex, model.ScopeGlobal}}, PlaceOpts{})
 	if !errors.Is(err, ErrPlaceUnsupported) {
-		t.Fatalf("want ErrPlaceUnsupported, got %v", err)
+		t.Fatalf("want ErrPlaceUnsupported for cross-tool entry, got %v", err)
+	}
+}
+
+// Re-running entry Place with a smaller target set must remove the
+// dropped projection's entry from the target config — the entry-side
+// equivalent of TestPlace_ReducingTargetsUnprojectsRemovedOnes.
+func TestPlace_EntryReducingTargetsRemovesProjection(t *testing.T) {
+	home := t.TempDir()
+	proj := canonicalTempDir(t)
+	t.Setenv("HOME", home)
+
+	srcPath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(srcPath, []byte(`{"mcpServers":{"fs":{"command":"node"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindMCP,
+		Scope:     model.ScopeGlobal,
+		Name:      "fs",
+		Path:      srcPath,
+		Storage:   model.StorageEntry,
+		ConfigKey: "mcpServers/fs",
+	}
+
+	both := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginClaude, model.ScopeLocal},
+	}
+	if err := Place(it, both, PlaceOpts{ProjectDir: proj}); err != nil {
+		t.Fatalf("first Place: %v", err)
+	}
+	localPath := filepath.Join(proj, ".mcp.json")
+	if _, _, err := parseReadEntry(t, localPath, "mcpServers/fs"); err != nil {
+		t.Fatalf("local projection missing after first Place: %v", err)
+	}
+
+	globalOnly := []ProjectionTarget{{model.OriginClaude, model.ScopeGlobal}}
+	if err := Place(it, globalOnly, PlaceOpts{ProjectDir: proj}); err != nil {
+		t.Fatalf("second Place: %v", err)
+	}
+	if _, _, err := parseReadEntry(t, localPath, "mcpServers/fs"); err == nil {
+		t.Errorf("local entry should be gone")
+	}
+	// Source still in place.
+	if _, _, err := parseReadEntry(t, srcPath, "mcpServers/fs"); err != nil {
+		t.Errorf("source entry should survive: %v", err)
 	}
 }
 
@@ -463,6 +560,15 @@ func TestPlace_WritesProjectedToInManifest(t *testing.T) {
 }
 
 // --- helpers -------------------------------------------------------
+
+// parseReadEntry wraps parse.ReadEntry for the entry-shape tests. The
+// extra path passthrough mirrors the assertion call sites so a failure
+// includes the file the test was poking at.
+func parseReadEntry(t *testing.T, path, key string) (any, string, error) {
+	t.Helper()
+	v, _, err := parse.ReadEntry(path, key)
+	return v, path, err
+}
 
 func stageClaudeSkill(t *testing.T, home, name, body string) string {
 	t.Helper()

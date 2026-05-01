@@ -82,102 +82,12 @@ func TestDelete_StorageEntry_Hook(t *testing.T) {
 	}
 }
 
-func TestCopy_StorageFile_GlobalToLocal(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	project := filepath.Join(home, "proj")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	// Place a Claude global agent
-	globalDir := filepath.Join(home, ".claude", "agents")
-	if err := os.MkdirAll(globalDir, 0o755); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	src := filepath.Join(globalDir, "echo.md")
-	if err := os.WriteFile(src, []byte("body"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	it := model.Item{
-		Origin:  model.OriginClaude,
-		Kind:    model.KindAgent,
-		Scope:   model.ScopeGlobal,
-		Storage: model.StorageFile,
-		Path:    src,
-		Name:    "echo",
-	}
-
-	if err := Copy(it, project); err != nil {
-		t.Fatalf("Copy: %v", err)
-	}
-	dst := filepath.Join(project, ".claude", "agents", "echo.md")
-	if _, err := os.Stat(dst); err != nil {
-		t.Errorf("dst missing: %v", err)
-	}
-}
-
-func TestCopy_RefusesOverwrite(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	project := filepath.Join(home, "proj")
-	for _, p := range []string{
-		filepath.Join(home, ".claude", "agents", "echo.md"),
-		filepath.Join(project, ".claude", "agents", "echo.md"),
-	} {
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-	}
-	it := model.Item{
-		Origin:  model.OriginClaude,
-		Kind:    model.KindAgent,
-		Scope:   model.ScopeGlobal,
-		Storage: model.StorageFile,
-		Path:    filepath.Join(home, ".claude", "agents", "echo.md"),
-		Name:    "echo",
-	}
-	err := Copy(it, project)
-	if !errors.Is(err, ErrTargetExists) {
-		t.Errorf("err = %v, want ErrTargetExists", err)
-	}
-}
-
-func TestMove_CopyThenDelete(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	project := filepath.Join(home, "proj")
-	src := filepath.Join(home, ".claude", "agents", "echo.md")
-	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(src, []byte("body"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	it := model.Item{
-		Origin:  model.OriginClaude,
-		Kind:    model.KindAgent,
-		Scope:   model.ScopeGlobal,
-		Storage: model.StorageFile,
-		Path:    src,
-		Name:    "echo",
-	}
-	if err := Move(it, project); err != nil {
-		t.Fatalf("Move: %v", err)
-	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Error("src still exists after Move")
-	}
-	dst := filepath.Join(project, ".claude", "agents", "echo.md")
-	if _, err := os.Stat(dst); err != nil {
-		t.Errorf("dst missing: %v", err)
-	}
-}
-
-func TestCopy_HookEntry_GlobalToLocal(t *testing.T) {
+// PRI-69: Place projects a Claude/Global hook entry to Claude/Local —
+// equivalent of the legacy `c` (copy) on a hook with matcher
+// preservation. Uses the canonical Claude settings.json layout for the
+// source and verifies the local target file holds the picked inner
+// hook plus its matcher, without dragging sibling hooks along.
+func TestPlace_HookEntry_GlobalToLocal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	project := filepath.Join(home, "proj")
@@ -202,8 +112,12 @@ func TestCopy_HookEntry_GlobalToLocal(t *testing.T) {
 		Path:      globalSettings,
 		ConfigKey: "hooks/PreToolUse/0/hooks/1",
 	}
-	if err := Copy(it, project); err != nil {
-		t.Fatalf("Copy hook: %v", err)
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeGlobal},
+		{model.OriginClaude, model.ScopeLocal},
+	}
+	if err := Place(it, targets, PlaceOpts{ProjectDir: project}); err != nil {
+		t.Fatalf("Place hook: %v", err)
 	}
 
 	target := filepath.Join(project, ".claude", "settings.json")
@@ -223,11 +137,14 @@ func TestCopy_HookEntry_GlobalToLocal(t *testing.T) {
 	}
 }
 
-func TestCopy_HookEntry_AppendsToExistingTarget(t *testing.T) {
+// PRI-69: a Place that adds a hook to a target which already holds a
+// different hook must append rather than overwrite — the legacy
+// `c` semantics that placeHookProjection inherits via copyHookEntry.
+func TestPlace_HookEntry_AppendsToExistingTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Source = local settings.json under a project; target = global ~/.claude/settings.json
+	// Source = local settings.json under a project; target = global
 	project := filepath.Join(home, "proj")
 	localSettings := filepath.Join(project, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(localSettings), 0o755); err != nil {
@@ -236,7 +153,6 @@ func TestCopy_HookEntry_AppendsToExistingTarget(t *testing.T) {
 	if err := os.WriteFile(localSettings, []byte(`{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "added"}]}]}}`), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Pre-existing global file with a different hook already in place
 	globalSettings := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -253,8 +169,12 @@ func TestCopy_HookEntry_AppendsToExistingTarget(t *testing.T) {
 		Path:      localSettings,
 		ConfigKey: "hooks/PreToolUse/0/hooks/0",
 	}
-	if err := Copy(it, project); err != nil {
-		t.Fatalf("Copy hook: %v", err)
+	targets := []ProjectionTarget{
+		{model.OriginClaude, model.ScopeLocal},
+		{model.OriginClaude, model.ScopeGlobal},
+	}
+	if err := Place(it, targets, PlaceOpts{ProjectDir: project}); err != nil {
+		t.Fatalf("Place hook: %v", err)
 	}
 
 	got, err := os.ReadFile(globalSettings)
@@ -270,17 +190,26 @@ func TestCopy_HookEntry_AppendsToExistingTarget(t *testing.T) {
 	}
 }
 
-func TestCopy_LocalNeedsProject(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	it := model.Item{
-		Origin:  model.OriginClaude,
-		Kind:    model.KindAgent,
-		Scope:   model.ScopeGlobal,
-		Storage: model.StorageFile,
-		Path:    "/tmp/echo.md",
-		Name:    "echo",
+// PRI-69: Place rejects local-scope targets without a project dir,
+// preserving the legacy `c` ErrNoProject behaviour. Uses a minimal MCP
+// item to exercise the entry path.
+func TestPlace_LocalNeedsProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srcPath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(srcPath, []byte(`{"mcpServers":{"fs":{"command":"node"}}}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	err := Copy(it, "")
+	it := model.Item{
+		Origin:    model.OriginClaude,
+		Kind:      model.KindMCP,
+		Scope:     model.ScopeGlobal,
+		Storage:   model.StorageEntry,
+		Path:      srcPath,
+		Name:      "fs",
+		ConfigKey: "mcpServers/fs",
+	}
+	err := Place(it, []ProjectionTarget{{model.OriginClaude, model.ScopeLocal}}, PlaceOpts{})
 	if !errors.Is(err, ErrNoProject) {
 		t.Errorf("err = %v, want ErrNoProject", err)
 	}

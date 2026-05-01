@@ -9,9 +9,9 @@ import (
 )
 
 // CanonicalBodyName returns the filename inside `<root>/<kind>/<name>/`
-// that holds the item's body, mirroring what `actions.Share` writes
+// that holds the item's body, mirroring what `actions.Place` writes
 // and what `sources/lazyagent` reads. Centralised here so the layout
-// has a single owner — adapters, share, and drift detection all agree.
+// has a single owner — adapters, Place, and drift detection all agree.
 //
 // Returns ok=false for kinds whose store layout isn't defined (today
 // just MCP, which is entry-shaped and doesn't fit the per-item-dir

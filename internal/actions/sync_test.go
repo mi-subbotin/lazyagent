@@ -1,6 +1,9 @@
 package actions
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
@@ -136,11 +139,83 @@ func TestPlanActionString(t *testing.T) {
 	}
 }
 
+// TestApplyPlan_ImportsViaPlace stages a Claude-only skill, builds a
+// plan with SyncAll, and verifies ApplyPlan promotes the bytes to the
+// library and projects them back to all three tools — the same shape a
+// per-item `p` would produce. Guards the sync-via-Place migration.
+func TestApplyPlan_ImportsViaPlace(t *testing.T) {
+	home := t.TempDir()
+	lib := canonicalTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_LIBRARY", lib)
+
+	bodyPath := stageClaudeSkill(t, home, "echo", "hi\n")
+	it := skillItem("echo", bodyPath, model.OriginClaude, model.ScopeGlobal)
+
+	plan := SyncAll([]model.Item{it})
+	if errs := ApplyPlan(plan, false); len(errs) != 0 {
+		t.Fatalf("ApplyPlan errors: %v", errs)
+	}
+	canonicalDir := filepath.Join(lib, "skills", "echo")
+	if _, err := os.Stat(filepath.Join(canonicalDir, "SKILL.md")); err != nil {
+		t.Fatalf("canonical body missing: %v", err)
+	}
+	for _, p := range []string{
+		filepath.Join(home, ".claude", "skills", "echo"),
+		filepath.Join(home, ".agents", "skills", "echo"),
+		filepath.Join(home, ".gemini", "skills", "echo"),
+	} {
+		if got, err := os.Readlink(p); err != nil || got != canonicalDir {
+			t.Errorf("%s -> %s err=%v, want %s", p, got, err, canonicalDir)
+		}
+	}
+}
+
+// TestApplyPlan_ConflictReturnsErrPlaceConflicts confirms the conflict
+// sentinel propagates from Place through ApplyPlan unchanged. The CLI's
+// --yes flag and the sync-confirm overlay both rely on this.
+func TestApplyPlan_ConflictReturnsErrPlaceConflicts(t *testing.T) {
+	home := t.TempDir()
+	lib := canonicalTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("LAZYAGENT_LIBRARY", lib)
+
+	bodyPath := stageClaudeSkill(t, home, "echo", "fresh\n")
+	it := skillItem("echo", bodyPath, model.OriginClaude, model.ScopeGlobal)
+
+	// Pre-existing unrelated content at a target path forces a conflict.
+	codexExisting := filepath.Join(home, ".agents", "skills", "echo")
+	if err := os.MkdirAll(codexExisting, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexExisting, "SKILL.md"), []byte("not ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := SyncAll([]model.Item{it})
+	errs := ApplyPlan(plan, false)
+	if len(errs) == 0 {
+		t.Fatalf("expected conflict error, got none")
+	}
+	var hit bool
+	for _, e := range errs {
+		if errors.Is(e, ErrPlaceConflicts) {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Errorf("none of %v wraps ErrPlaceConflicts", errs)
+	}
+	if !IsSyncConflict(errs) {
+		t.Errorf("IsSyncConflict should detect the conflict; errs=%v", errs)
+	}
+}
+
 func TestIsSyncConflict(t *testing.T) {
 	if IsSyncConflict(nil) {
 		t.Error("nil errs should not report conflict")
 	}
-	if !IsSyncConflict([]error{ErrShareConflicts}) {
-		t.Error("ErrShareConflicts should be detected")
+	if !IsSyncConflict([]error{ErrPlaceConflicts}) {
+		t.Error("ErrPlaceConflicts should be detected")
 	}
 }

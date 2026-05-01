@@ -1,11 +1,11 @@
 // One-button sync-all (PRI-27).
 //
-// SyncAll plans the bulk equivalent of the per-item `s` flow: walk every
+// SyncAll plans the bulk equivalent of the per-item `p` flow: walk every
 // shareable global item, decide whether it needs to be imported into
-// the canonical store, projected to an additional tool, or left alone,
-// and return a Plan the caller can preview before mutation. ApplyPlan
-// then runs the plan, calling the existing Share / Reshare primitives
-// so conflict-handling and manifest behaviour stay consistent.
+// the library, projected to an additional tool, or left alone, and
+// return a Plan the caller can preview before mutation. ApplyPlan then
+// runs the plan via Place so conflict-handling and manifest behaviour
+// stay consistent with the interactive overlay.
 //
 // Scope decision (per the design doc): v1 ships the lossless subset —
 // skills + memory across all three tools, agents/prompts where they
@@ -38,15 +38,15 @@ const (
 	// explains *why* a reasonable-looking item was skipped (unsupported
 	// kind, format conversion required, local scope).
 	ActionSkip PlanAction = iota
-	// ActionImport means the item is not yet in the canonical store;
-	// SyncAll will move its bytes in and project to every supported tool.
+	// ActionImport means the item is not yet in the library; SyncAll
+	// will Place its bytes in and project to every supported tool.
 	ActionImport
 	// ActionProject means the item is already canonical but missing
 	// from one or more tools; SyncAll will create the projection links.
 	ActionProject
 	// ActionResync means the item is shared but its tool projection has
-	// drifted (copy-mode bytes diverge from canonical). SyncAll runs
-	// Reshare with the current target set so canonical wins.
+	// drifted (copy-mode bytes diverge from canonical). SyncAll calls
+	// Place with the union of current + missing targets so canonical wins.
 	ActionResync
 )
 
@@ -137,7 +137,7 @@ func SyncAll(items []model.Item) Plan {
 	}
 
 	for _, it := range items {
-		if !CanShare(it) {
+		if !canSyncShare(it) {
 			continue
 		}
 		k := key{kind: it.Kind, name: it.Name}
@@ -169,7 +169,7 @@ func SyncAll(items []model.Item) Plan {
 		var projTargets []model.Origin
 		var droppedTargets []model.Origin
 		for _, t := range allTargets {
-			if CanProjectTo(it.Kind, t) {
+			if CanPlaceTo(it.Kind, t) {
 				projTargets = append(projTargets, t)
 			} else {
 				droppedTargets = append(droppedTargets, t)
@@ -184,7 +184,7 @@ func SyncAll(items []model.Item) Plan {
 		case s.canonical:
 			// Already shared. Are all eligible projections already in
 			// place? If so, skip; if not, project the missing ones.
-			current := CurrentProjections(it)
+			current := globalOriginsFromTargets(CurrentPlaceProjections(it, ""))
 			missing := diffOrigin(projTargets, current)
 			if len(missing) == 0 {
 				op.Action = ActionSkip
@@ -215,7 +215,7 @@ func SyncAll(items []model.Item) Plan {
 		if it.Scope != model.ScopeGlobal {
 			continue
 		}
-		if CanShare(it) {
+		if canSyncShare(it) {
 			continue
 		}
 		uk := unsupportedKey{it.Kind, it.Name}
@@ -242,7 +242,7 @@ func SyncAll(items []model.Item) Plan {
 // ApplyPlan executes every non-Skip op in plan, returning the slice of
 // per-op errors keyed by Item.Name (empty on success). Errors do not
 // abort the run — a single bad item shouldn't block the rest of the
-// sync. ErrShareConflicts is surfaced as-is so the caller can re-call
+// sync. ErrPlaceConflicts is surfaced as-is so the caller can re-call
 // with overwrite=true after confirmation.
 func ApplyPlan(plan Plan, overwrite bool) []error {
 	var errs []error
@@ -251,27 +251,25 @@ func ApplyPlan(plan Plan, overwrite bool) []error {
 		case ActionSkip:
 			continue
 		case ActionImport:
-			if err := Share(op.Item, op.Targets, overwrite); err != nil {
+			targets := globalTargets(op.Targets)
+			if err := Place(op.Item, targets, PlaceOpts{Overwrite: overwrite}); err != nil {
 				errs = append(errs, fmt.Errorf("import %s: %w", op.Item.Name, err))
 			}
 		case ActionProject, ActionResync:
-			// Reshare wants the *full* desired target set, not the
-			// delta. CurrentProjections + planned additions = desired.
-			current := CurrentProjections(op.Item)
-			full := append([]model.Origin(nil), current...)
-			for _, t := range op.Targets {
-				dup := false
-				for _, c := range current {
-					if c == t {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					full = append(full, t)
+			// Place takes the *full* desired target set, not the delta.
+			// CurrentPlaceProjections + planned additions = desired.
+			currentTargets := CurrentPlaceProjections(op.Item, "")
+			desired := append([]ProjectionTarget(nil), currentTargets...)
+			seen := map[ProjectionTarget]bool{}
+			for _, t := range currentTargets {
+				seen[t] = true
+			}
+			for _, t := range globalTargets(op.Targets) {
+				if !seen[t] {
+					desired = append(desired, t)
 				}
 			}
-			if err := Reshare(op.Item, full, overwrite); err != nil {
+			if err := Place(op.Item, desired, PlaceOpts{Overwrite: overwrite}); err != nil {
 				errs = append(errs, fmt.Errorf("project %s: %w", op.Item.Name, err))
 			}
 		}
@@ -280,13 +278,55 @@ func ApplyPlan(plan Plan, overwrite bool) []error {
 }
 
 // IsSyncConflict reports whether any error from ApplyPlan is the
-// share-conflict sentinel. Useful for the CLI to decide between
+// place-conflict sentinel. Useful for the CLI to decide between
 // "exit with explanatory message" and "retry with --yes".
 func IsSyncConflict(errs []error) bool {
 	for _, e := range errs {
-		if errors.Is(e, ErrShareConflicts) {
+		if errors.Is(e, ErrPlaceConflicts) {
 			return true
 		}
 	}
 	return false
+}
+
+// canSyncShare gates SyncAll's per-item filter. Sync is global-only by
+// design (decision 4 in the design doc) and limited to file/dir shapes
+// that have a canonical library layout. Entry-shaped items (MCP, hooks,
+// Codex profiles) are eligible for the per-item `p` flow but not for
+// bulk sync — they live inside per-tool config files and there's no
+// single "import to library" semantic that makes sense across all tools
+// at once.
+func canSyncShare(it model.Item) bool {
+	if it.Scope != model.ScopeGlobal {
+		return false
+	}
+	if it.Storage == model.StorageEntry {
+		return false
+	}
+	return CanPlace(it)
+}
+
+// globalTargets lifts a []Origin into the matching list of global
+// ProjectionTargets. Sync's plan stores targets as origins (it never
+// touches local scope), but Place wants the (Origin, Scope) pair.
+func globalTargets(origins []model.Origin) []ProjectionTarget {
+	out := make([]ProjectionTarget, 0, len(origins))
+	for _, o := range origins {
+		out = append(out, ProjectionTarget{Origin: o, Scope: model.ScopeGlobal})
+	}
+	return out
+}
+
+// globalOriginsFromTargets is the inverse projection: keep only global
+// targets and surface them as origins. Sync's de-dupe and "missing
+// targets" math runs in origin-space, so this lets us reuse the
+// pre-existing diffOrigin helper without rewriting it for the matrix.
+func globalOriginsFromTargets(targets []ProjectionTarget) []model.Origin {
+	var out []model.Origin
+	for _, t := range targets {
+		if t.Scope == model.ScopeGlobal {
+			out = append(out, t.Origin)
+		}
+	}
+	return out
 }

@@ -26,7 +26,7 @@ type Candidate struct {
 	// parent); for Agent / Prompt it's the .md file itself.
 	SourceRel string
 	// Storage matches model.Storage so callers can hand the candidate
-	// straight to actions.Copy without a second classification pass.
+	// straight to actions.Place without a second classification pass.
 	Storage model.Storage
 	// ParseError mirrors model.Item.ParseError — non-empty means the
 	// frontmatter is malformed but the file exists. The TUI shows it
