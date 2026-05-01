@@ -18,6 +18,11 @@ type Cache struct {
 	Projects    []Project `json:"projects"`
 }
 
+// MarkerMtimes is set on each Project after a Discover() call so the
+// cache can detect mutations cheaply on the next launch — see
+// MtimesUnchanged. Embedded as a per-project map (marker filename →
+// unix-seconds mtime) inside Project itself.
+
 // CachePath returns the canonical location of the index cache. Sits
 // next to state.json and config.toml under ~/.lazyagent/.
 func CachePath() (string, error) {
@@ -95,4 +100,39 @@ func IsFresh(c Cache, now time.Time, maxAge time.Duration) bool {
 		return false
 	}
 	return now.Sub(time.Unix(c.GeneratedAt, 0)) < maxAge
+}
+
+// MtimesUnchanged stats every marker recorded in c.Projects and
+// reports whether all mtimes match what the walker saw last time. When
+// true, nothing under any known project root has been touched since
+// the cache was generated — so a re-walk would just rediscover the
+// same set, modulo brand-new project roots created between launches
+// (which require an explicit reload to pick up). Returns false on the
+// first marker mismatch, missing-marker, or stat error.
+//
+// PRI-56: lets us amortise a cold $HOME walk over many launches when
+// nothing has changed, while still re-walking promptly when the user
+// edits any of their tool config dirs.
+func MtimesUnchanged(c Cache) bool {
+	if len(c.Projects) == 0 {
+		return false
+	}
+	for _, p := range c.Projects {
+		if len(p.MarkerMtimes) == 0 {
+			// Cache predates the mtime tracking added in PRI-56 — treat
+			// as stale so the next launch triggers a re-walk that
+			// populates the new field.
+			return false
+		}
+		for marker, recorded := range p.MarkerMtimes {
+			info, err := os.Stat(filepath.Join(p.Path, marker))
+			if err != nil {
+				return false
+			}
+			if info.ModTime().Unix() != recorded {
+				return false
+			}
+		}
+	}
+	return true
 }

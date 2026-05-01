@@ -26,11 +26,15 @@
 package index
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -86,9 +90,16 @@ var skipDirs = map[string]struct{}{
 // Project is one discovered project root. Path is absolute; Markers
 // lists which tool-config files were found there (sorted) so the TUI
 // can show e.g. "[.claude .codex] /path/to/foo".
+//
+// MarkerMtimes is the unix-seconds mtime of each marker at walk time.
+// Cache.MtimesUnchanged stats them again on launch and returns true
+// when nothing has shifted, letting us skip a re-walk indefinitely
+// instead of re-walking $HOME every 24h. Empty when the walk pre-dates
+// PRI-56 — old caches are still loadable, they just always look stale.
 type Project struct {
-	Path    string
-	Markers []string
+	Path         string           `json:"Path"`
+	Markers      []string         `json:"Markers"`
+	MarkerMtimes map[string]int64 `json:"MarkerMtimes,omitempty"`
 }
 
 // Options tunes a walk. Roots default to []{$HOME} when empty;
@@ -107,6 +118,10 @@ type Options struct {
 	MaxDepth     int
 	SkipPrefixes []string
 	Ignore       *Ignore
+	// DisableFd forces the stdlib walker even when `fd` is available in
+	// PATH. Used by tests so the deterministic walker shape is exercised
+	// regardless of the host machine.
+	DisableFd bool
 }
 
 // Discover walks every root in opts and returns the deduplicated list
@@ -138,10 +153,17 @@ func Discover(opts Options) ([]Project, error) {
 	skip = append(skip, defaultCloudSyncPrefixes()...)
 
 	seen := make(map[string]*Project)
+	useFd := !opts.DisableFd && fdBinary() != ""
 	for _, root := range roots {
 		absRoot, err := filepath.Abs(root)
 		if err != nil {
 			continue
+		}
+		if useFd {
+			if walkedWithFd(absRoot, maxDepth, skip, opts.Ignore, seen) {
+				continue
+			}
+			// fd unavailable / failed for this root — fall back below.
 		}
 		walkRoot(absRoot, maxDepth, skip, opts.Ignore, seen)
 	}
@@ -149,10 +171,31 @@ func Discover(opts Options) ([]Project, error) {
 	out := make([]Project, 0, len(seen))
 	for _, p := range seen {
 		sort.Strings(p.Markers)
+		p.MarkerMtimes = readMarkerMtimes(p.Path, p.Markers)
 		out = append(out, *p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// readMarkerMtimes stats each marker under dir and returns a map from
+// marker name to unix-seconds mtime. Missing markers (a race where the
+// marker disappeared between the walk and this stat) are silently
+// dropped — the next walk would catch it via MtimesUnchanged returning
+// false.
+func readMarkerMtimes(dir string, markers []string) map[string]int64 {
+	if len(markers) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(markers))
+	for _, m := range markers {
+		info, err := os.Stat(filepath.Join(dir, m))
+		if err != nil {
+			continue
+		}
+		out[m] = info.ModTime().Unix()
+	}
+	return out
 }
 
 // walkRoot descends one root until maxDepth, recording every project
@@ -239,6 +282,137 @@ func matchMarkers(dir string) []string {
 		}
 	}
 	return out
+}
+
+// fdBinary locates `fd` (or its Debian-renamed `fdfind`) in PATH and
+// returns the absolute path to the executable, or "" when neither is
+// available. We probe both names so the same code works on macOS /
+// Arch / Fedora (where it's `fd`) and Debian / Ubuntu (where the
+// official package ships as `fdfind` to avoid a conflict).
+func fdBinary() string {
+	for _, name := range []string{"fd", "fdfind"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// walkedWithFd performs the marker-discovery pass via `fd`, populating
+// `out` with one Project per directory whose entries include any of
+// markerNames. Returns true on success; false signals the caller to
+// fall back to the stdlib walker.
+//
+// fd is run with --hidden so dotfiles surface, --no-ignore so the user's
+// gitignore patterns don't accidentally hide real projects (we run our
+// own ignore pass via opts.Ignore), --max-depth from opts, and the
+// skipDirs list mapped onto -E (--exclude) flags. The pattern is a
+// regex anchored to the basename: only direct marker filenames match.
+//
+// Output lines are absolute paths to marker entries; the project root
+// is filepath.Dir(line). We dedupe by parent so a project with several
+// markers (e.g. .claude + AGENTS.md) lands as one entry.
+func walkedWithFd(root string, maxDepth int, skipPrefixes []string, ig *Ignore, out map[string]*Project) bool {
+	bin := fdBinary()
+	if bin == "" {
+		return false
+	}
+	args := []string{
+		"--hidden",
+		"--no-ignore",
+		"--absolute-path",
+		"--max-depth", strconv.Itoa(maxDepth),
+	}
+	for name := range skipDirs {
+		args = append(args, "--exclude", name)
+	}
+	pattern := `^(\.claude|\.codex|\.gemini|\.agents|\.mcp\.json|CLAUDE\.md|AGENTS\.md|GEMINI\.md)$`
+	args = append(args, pattern, root)
+
+	cmd := exec.Command(bin, args...)
+	stdout, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	type pending struct {
+		dir     string
+		markers map[string]struct{}
+	}
+	pendings := make(map[string]*pending)
+
+	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		base := filepath.Base(line)
+		if _, ok := markerNames[base]; !ok {
+			continue
+		}
+		dir := filepath.Dir(line)
+		// Cloud-sync / explicit skip prefix filtering: the stdlib walker
+		// short-circuits these via fs.SkipDir, but fd has no equivalent
+		// hook, so we filter on the way out.
+		skipped := false
+		for _, prefix := range skipPrefixes {
+			if dir == prefix || strings.HasPrefix(dir, prefix+string(filepath.Separator)) {
+				skipped = true
+				break
+			}
+		}
+		if skipped {
+			continue
+		}
+		if ig.Match(dir) {
+			continue
+		}
+		p, ok := pendings[dir]
+		if !ok {
+			p = &pending{dir: dir, markers: map[string]struct{}{}}
+			pendings[dir] = p
+		}
+		p.markers[base] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return false
+	}
+
+	// Vendored-project pruning: when a project sits inside another
+	// project (typical: monorepo .claude at the root, plus a vendored
+	// .claude under `node_modules` that fd's --exclude already dropped,
+	// or a deeper sub-package), keep only the shallowest ancestor. The
+	// stdlib walker gets this for free via fs.SkipDir; we replay it.
+	dirs := make([]string, 0, len(pendings))
+	for d := range pendings {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if _, dropped := pendings[d]; !dropped {
+			continue
+		}
+		// Drop any pending entry that's a strict descendant of d.
+		for _, child := range dirs {
+			if child == d {
+				continue
+			}
+			if strings.HasPrefix(child, d+string(filepath.Separator)) {
+				delete(pendings, child)
+			}
+		}
+	}
+
+	for d, p := range pendings {
+		markers := make([]string, 0, len(p.markers))
+		for m := range p.markers {
+			markers = append(markers, m)
+		}
+		out[d] = &Project{Path: d, Markers: markers}
+	}
+	return true
 }
 
 // defaultCloudSyncPrefixes returns the absolute paths to common cloud

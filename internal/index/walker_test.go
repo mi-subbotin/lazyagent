@@ -85,6 +85,80 @@ func TestCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMtimesUnchanged_DetectsModification(t *testing.T) {
+	dir := t.TempDir()
+	proj := filepath.Join(dir, "alpha")
+	mustMkdirAll(t, filepath.Join(proj, ".claude"))
+	mustWrite(t, filepath.Join(proj, "CLAUDE.md"), "# alpha")
+
+	got, err := Discover(Options{Roots: []string{dir}, DisableFd: true})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d projects, want 1", len(got))
+	}
+	if len(got[0].MarkerMtimes) == 0 {
+		t.Fatal("MarkerMtimes should be populated after Discover")
+	}
+
+	c := Cache{Projects: got}
+	if !MtimesUnchanged(c) {
+		t.Errorf("freshly-discovered cache should report unchanged mtimes")
+	}
+
+	// Touch the marker file → mtime moves forward → cache must report stale.
+	future := time.Now().Add(1 * time.Hour)
+	if err := os.Chtimes(filepath.Join(proj, "CLAUDE.md"), future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	if MtimesUnchanged(c) {
+		t.Errorf("after touching a marker, MtimesUnchanged should return false")
+	}
+}
+
+func TestMtimesUnchanged_EmptyCache(t *testing.T) {
+	if MtimesUnchanged(Cache{}) {
+		t.Error("empty cache should never report unchanged mtimes")
+	}
+}
+
+func TestMtimesUnchanged_LegacyCacheStale(t *testing.T) {
+	// A cache produced before PRI-56 has Projects but no MarkerMtimes;
+	// must report stale so the next launch re-walks and populates the
+	// new field.
+	c := Cache{Projects: []Project{{Path: "/tmp/foo", Markers: []string{".claude"}}}}
+	if MtimesUnchanged(c) {
+		t.Error("pre-PRI-56 cache without MarkerMtimes must be treated as stale")
+	}
+}
+
+func TestDiscoverFdPath_WhenAvailable(t *testing.T) {
+	if fdBinary() == "" {
+		t.Skip("fd / fdfind not installed; skipping fd path test")
+	}
+	root := t.TempDir()
+	mustMkdirAll(t, filepath.Join(root, "alpha", ".claude"))
+	mustWrite(t, filepath.Join(root, "alpha", ".claude", "settings.json"), "{}")
+	mustWrite(t, filepath.Join(root, "beta", "AGENTS.md"), "# beta")
+	mustMkdirAll(t, filepath.Join(root, "beta", ".gemini"))
+	// Vendored decoy: fd's --exclude node_modules should drop this.
+	mustMkdirAll(t, filepath.Join(root, "alpha", "node_modules", "foo", ".claude"))
+
+	got, err := Discover(Options{Roots: []string{root}})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	gotPaths := make([]string, 0, len(got))
+	for _, p := range got {
+		gotPaths = append(gotPaths, filepath.Base(p.Path))
+	}
+	want := []string{"alpha", "beta"}
+	if !reflect.DeepEqual(gotPaths, want) {
+		t.Errorf("project bases via fd = %v, want %v", gotPaths, want)
+	}
+}
+
 func TestIsFresh(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	if IsFresh(Cache{}, now, time.Hour) {

@@ -224,8 +224,14 @@ type Model struct {
 	// the tree under each Origin's Local section. Items from foreign
 	// projects carry Item.Meta["project"] = projectDir so the renderer
 	// can suffix them with the project name.
+	//
+	// PRI-56: allLocalModeB switches the Local section from a flat list
+	// (Mode A — the original) to a per-project subgroup tree (Mode B —
+	// each project becomes its own collapsible node under Local). Only
+	// meaningful when allLocal is true; toggled via Shift+B.
 	discoveredProjects []string
 	allLocal           bool
+	allLocalModeB      bool
 }
 
 func New(srcs []sources.Source, projectDir string) Model {
@@ -637,6 +643,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setToast("all-local: off")
 			}
 			return m, m.loadCmd()
+		case "B":
+			// PRI-56: toggle Mode B (per-project subgroups under Local).
+			// Only useful when all-local mode is active; ignored otherwise
+			// so users don't get a silently mutating state.
+			if !m.allLocal {
+				m.setToast("all-local must be on (A) for Mode B")
+				return m, nil
+			}
+			m.allLocalModeB = !m.allLocalModeB
+			m.rebuildTree()
+			if m.allLocalModeB {
+				m.setToast("all-local: Mode B (per-project)")
+			} else {
+				m.setToast("all-local: Mode A (flat)")
+			}
+			return m, nil
 		case "/":
 			m.filterMode = true
 			m.focus = focusTree
@@ -1446,13 +1468,47 @@ func (m *Model) rebuildTree() {
 					}
 				}
 			}
-			if m.projectDir != "" && len(b.local) > 0 {
+			localVisible := (m.projectDir != "" || m.allLocal) && len(b.local) > 0
+			if localVisible {
 				lPath := kPath + "/Local"
 				tree = append(tree, node{depth: 2, label: lPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[lPath]})
 				if m.expanded[lPath] {
 					sortItems(b.local)
-					for _, idx := range b.local {
-						tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+					if m.allLocal && m.allLocalModeB {
+						// Mode B: bucket Local items by their project dir
+						// (Item.Meta["project"]) and render one collapsible
+						// subgroup per project, with the items underneath.
+						byProject := map[string][]int{}
+						projectOrder := []string{}
+						for _, idx := range b.local {
+							pdir := m.items[idx].Meta["project"]
+							if pdir == "" {
+								pdir = m.projectDir
+							}
+							if _, seen := byProject[pdir]; !seen {
+								projectOrder = append(projectOrder, pdir)
+							}
+							byProject[pdir] = append(byProject[pdir], idx)
+						}
+						sort.Strings(projectOrder)
+						for _, pdir := range projectOrder {
+							pPath := lPath + "/" + pdir
+							label := filepath.Base(pdir)
+							if pdir == m.projectDir {
+								label += " (cwd)"
+							}
+							tree = append(tree, node{depth: 3, label: pPath, isGroup: true, itemIdx: -1, collapsed: !m.expanded[pPath]})
+							tree[len(tree)-1].labelOverride(label)
+							if m.expanded[pPath] {
+								for _, idx := range byProject[pdir] {
+									tree = append(tree, node{depth: 4, label: m.items[idx].Name, itemIdx: idx})
+								}
+							}
+						}
+					} else {
+						for _, idx := range b.local {
+							tree = append(tree, node{depth: 3, label: m.items[idx].Name, itemIdx: idx})
+						}
 					}
 				}
 			}
@@ -1462,7 +1518,7 @@ func (m *Model) rebuildTree() {
 			// rendered correctly. itemIdx == -1 keeps it inert — j/k can
 			// land on it, but tab/enter does nothing because activate()
 			// short-circuits on a non-group node with no item.
-			if filter == "" && len(b.global) == 0 && (m.projectDir == "" || len(b.local) == 0) &&
+			if filter == "" && len(b.global) == 0 && !localVisible &&
 				(!privateVisible || len(b.private) == 0) {
 				placeholder := "no " + strings.ToLower(k.String()) + " yet"
 				tree = append(tree, node{depth: 2, label: placeholder, itemIdx: -1, isEmpty: true})
@@ -1589,6 +1645,7 @@ func helpText() string {
 		"  i        install from a github.com / gist URL\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
 		"  A        toggle all-local mode (fold every discovered project's items)\n" +
+		"  B        toggle Mode B (per-project subgroups under Local; needs A)\n" +
 		"  r        reload all sources\n" +
 		"  ?        toggle this help\n" +
 		"  q        quit\n" +

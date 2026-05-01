@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/mi-subbotin/lazyagent/internal/model"
 )
 
 func TestPendingCopyAndCancel(t *testing.T) {
@@ -137,6 +139,55 @@ func TestInstallSourceSetterAndModel(t *testing.T) {
 	}
 }
 
+func TestModeBTogglesPerProjectGrouping(t *testing.T) {
+	// Seed two distinct local projects so Mode B has something to group.
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSkill, Scope: model.ScopeLocal, Name: "alpha", Path: "/tmp/proj1/.claude/skills/alpha/SKILL.md", Storage: model.StorageDir, Meta: map[string]string{"project": "/tmp/proj1"}},
+		{Origin: model.OriginClaude, Kind: model.KindSkill, Scope: model.ScopeLocal, Name: "beta", Path: "/tmp/proj2/.claude/skills/beta/SKILL.md", Storage: model.StorageDir, Meta: map[string]string{"project": "/tmp/proj2"}},
+	}
+	m := newTestModel(t, items, "")
+	// Activate all-local mode without going through `A` (which kicks a
+	// reload that re-fans through the source); just flip the field and
+	// rebuild manually so the test stays synchronous.
+	m.allLocal = true
+	m.expanded["Claude/Skills/Local"] = true
+	m.rebuildTree()
+
+	m = feed(t, m, "B")
+	if !m.allLocalModeB {
+		t.Fatal("B should toggle Mode B on when all-local is active")
+	}
+
+	// In Mode B, the Local section should expose two project subgroups
+	// at depth 3 (between "Local" at depth 2 and items at depth 4).
+	var projectNodes int
+	for _, n := range m.tree {
+		if n.isGroup && n.depth == 3 && (strings.Contains(n.label, "/Local/") || strings.HasSuffix(n.label, "/proj1") || strings.HasSuffix(n.label, "/proj2")) {
+			projectNodes++
+		}
+	}
+	if projectNodes < 2 {
+		t.Errorf("Mode B should render >= 2 project subgroups, got %d:\n%s", projectNodes, treeDump(m))
+	}
+
+	// Toggle back to Mode A — flat list, no project subgroups.
+	m = feed(t, m, "B")
+	if m.allLocalModeB {
+		t.Fatal("B again should toggle Mode B off")
+	}
+}
+
+func TestModeBRefusedWhenAllLocalOff(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "")
+	if m.allLocal {
+		t.Fatal("test precondition: allLocal must default off")
+	}
+	m = feed(t, m, "B")
+	if m.allLocalModeB {
+		t.Error("B without A should not enable Mode B")
+	}
+}
+
 func TestSetDiscoveredProjectsFiltersCwd(t *testing.T) {
 	m := newTestModel(t, nil, "/tmp/cwd-proj")
 	m.SetDiscoveredProjects([]string{"/tmp/cwd-proj", "/tmp/other", ""}, false)
@@ -174,4 +225,3 @@ func treeDump(m Model) string {
 	}
 	return b.String()
 }
-

@@ -217,9 +217,17 @@ func main() {
 	if ignoreErr != nil {
 		slog.Warn("ignore: load failed", "err", ignoreErr)
 	}
+	// PRI-56: cache is valid if either the 24h TTL hasn't elapsed OR
+	// every recorded marker mtime is unchanged. The mtime path lets a
+	// quiet user skip the re-walk indefinitely; the 24h TTL is the
+	// safety net that catches new projects created between launches.
+	cacheValid := false
 	if doIndex {
-		if cached, err := index.LoadCache(); err == nil && index.IsFresh(cached, time.Now(), 24*time.Hour) {
-			initialProjects = filterIgnored(projectsFromCache(cached), ignoreFilter)
+		if cached, err := index.LoadCache(); err == nil {
+			if index.IsFresh(cached, time.Now(), 24*time.Hour) || index.MtimesUnchanged(cached) {
+				initialProjects = filterIgnored(projectsFromCache(cached), ignoreFilter)
+				cacheValid = true
+			}
 		}
 	}
 	m.SetDiscoveredProjects(initialProjects, *allLocal)
@@ -238,7 +246,13 @@ func main() {
 	// PRI-4: re-walk the configured roots in the background and
 	// refresh the cache. The walk takes 2–10s on a typical $HOME, so
 	// blocking startup on it would hurt the brew install experience.
-	if doIndex {
+	//
+	// PRI-56: skip the background re-walk when the cache is still
+	// valid (TTL fresh or every marker mtime unchanged). A quiet user
+	// who hasn't touched any tool config since the last launch pays
+	// nothing — the next change triggers the re-walk on the launch
+	// after that.
+	if doIndex && !cacheValid {
 		go runProjectIndex(p, resolveSearchRoots(cfg.Search.Roots, extraRoots), ignoreFilter)
 	}
 
