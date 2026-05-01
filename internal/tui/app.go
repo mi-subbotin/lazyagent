@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1561,6 +1562,56 @@ func (m *Model) rebuildTree() {
 	}
 }
 
+// usageFooter sums the per-session cost across every Claude session
+// item in m.items and returns a "Today: $X · 7d: $Y · 30d: $Z" string
+// for the third title-row slot. Returns "" when there are no priced
+// sessions or when the privacy toggle (H) is on. Codex / Gemini are
+// counted with their own usage data when adapters populate it; today
+// only Claude does.
+func (m Model) usageFooter() string {
+	if m.hidePrivateSessions {
+		// Same toggle that suppresses private sessions also masks the
+		// cost line — privacy-conscious users won't want to read their
+		// spend on a shared screen either.
+		return ""
+	}
+	now := time.Now()
+	var today, week, month float64
+	var anyPriced bool
+	for _, it := range m.items {
+		if it.Kind != model.KindSession {
+			continue
+		}
+		raw := it.Meta["cost_usd"]
+		if raw == "" {
+			continue
+		}
+		cost, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339, it.Meta["lastUpdated"])
+		if err != nil {
+			continue
+		}
+		age := now.Sub(ts)
+		if age < 24*time.Hour {
+			today += cost
+		}
+		if age < 7*24*time.Hour {
+			week += cost
+		}
+		if age < 30*24*time.Hour {
+			month += cost
+		}
+		anyPriced = true
+	}
+	if !anyPriced {
+		return ""
+	}
+	return fmt.Sprintf("usage · today $%.2f · 7d $%.2f · 30d $%.2f", today, week, month)
+}
+
 // defaultStatusLine builds the bottom hint for the normal browse mode,
 // showing only the keys that actually apply to whatever is under the
 // cursor. Modal modes (filter, picker, editor, conflict) have their
@@ -1952,7 +2003,14 @@ func (m Model) renderTree(w, h int) string {
 	case m.filterText != "":
 		lines = append(lines, dimStyle.Render(truncRunes("filter: "+m.filterText+"  (esc to clear)", contentW)))
 	default:
-		lines = append(lines, "")
+		// PRI-31: when no filter is active, surface the usage / cost
+		// aggregate here. Hidden when the H privacy toggle is on so a
+		// shoulder-surfer can't read the user's spend at a glance.
+		if footer := m.usageFooter(); footer != "" {
+			lines = append(lines, dimStyle.Render(truncRunes(footer, contentW)))
+		} else {
+			lines = append(lines, "")
+		}
 	}
 
 	avail := h - len(lines)

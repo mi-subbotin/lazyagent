@@ -1,0 +1,76 @@
+{
+  "_comment": "Per-million-token USD rates for the models lazyagent meets in the wild. Update by PR when Anthropic / OpenAI / Google publish a new tier. cache_read is typically 10% of input for Anthropic models. Values are best-effort snapshots — see VISION.md for the policy on offline-first cost tracking.",
+  "_updated": "2026-05-01",
+  "models": {
+    "claude-opus-4-7": {
+      "input": 15.0,
+      "output": 75.0,
+      "cache_create": 18.75,
+      "cache_read": 1.50
+    },
+    "claude-sonnet-4-6": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_create": 3.75,
+      "cache_read": 0.30
+    },
+    "claude-haiku-4-5": {
+      "input": 1.0,
+      "output": 5.0,
+      "cache_create": 1.25,
+      "cache_read": 0.10
+    },
+    "claude-3-7-sonnet": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_create": 3.75,
+      "cache_read": 0.30
+    },
+    "claude-3-5-sonnet": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_create": 3.75,
+      "cache_read": 0.30
+    },
+    "claude-3-5-haiku": {
+      "input": 0.80,
+      "output": 4.0,
+      "cache_create": 1.0,
+      "cache_read": 0.08
+    },
+    "claude-3-opus": {
+      "input": 15.0,
+      "output": 75.0,
+      "cache_create": 18.75,
+      "cache_read": 1.50
+    },
+    "gpt-5": {
+      "input": 1.25,
+      "output": 10.0
+    },
+    "gpt-5-mini": {
+      "input": 0.25,
+      "output": 2.0
+    },
+    "gpt-4o": {
+      "input": 2.50,
+      "output": 10.0
+    },
+    "gemini-2.5-pro": {
+      "input": 1.25,
+      "output": 10.0
+    },
+    "gemini-2.5-flash": {
+      "input": 0.30,
+      "output": 2.50
+    },
+    "gemini-1.5-pro": {
+      "input": 1.25,
+      "output": 5.0
+    },
+    "gemini-1.5-flash": {
+      "input": 0.075,
+      "output": 0.30
+    }
+  }
+}

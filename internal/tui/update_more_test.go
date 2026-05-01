@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
 )
@@ -185,6 +186,50 @@ func TestModeBRefusedWhenAllLocalOff(t *testing.T) {
 	m = feed(t, m, "B")
 	if m.allLocalModeB {
 		t.Error("B without A should not enable Mode B")
+	}
+}
+
+func TestUsageFooterAggregatesPricedSessions(t *testing.T) {
+	// Isolate $HOME so a stale state.json from another test (notably
+	// the H privacy toggle) can't leak into this test's model.
+	t.Setenv("HOME", t.TempDir())
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")
+	sevenDaysOld := time.Now().Add(-3 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05Z07:00")
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Name: "today",
+			Storage: model.StorageFile, Path: "/tmp/a.jsonl",
+			Meta: map[string]string{"cost_usd": "1.50", "lastUpdated": now}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Name: "older",
+			Storage: model.StorageFile, Path: "/tmp/b.jsonl",
+			Meta: map[string]string{"cost_usd": "2.00", "lastUpdated": sevenDaysOld}},
+	}
+	m := newTestModel(t, items, "")
+	footer := m.usageFooter()
+	if !strings.Contains(footer, "today $1.50") {
+		t.Errorf("footer missing today total: %q", footer)
+	}
+	if !strings.Contains(footer, "7d $3.50") {
+		t.Errorf("footer should sum today + 3d-old in 7d window: %q", footer)
+	}
+}
+
+func TestUsageFooterHiddenWhenPrivacyOn(t *testing.T) {
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSession, Scope: model.ScopeGlobal, Name: "x",
+			Storage: model.StorageFile,
+			Meta:    map[string]string{"cost_usd": "5.00", "lastUpdated": time.Now().UTC().Format("2006-01-02T15:04:05Z07:00")}},
+	}
+	m := newTestModel(t, items, "")
+	m.hidePrivateSessions = true
+	if got := m.usageFooter(); got != "" {
+		t.Errorf("usageFooter should return empty when privacy is on, got %q", got)
+	}
+}
+
+func TestUsageFooterEmptyWhenNoPricedSessions(t *testing.T) {
+	m := newTestModel(t, fixtureItems(), "")
+	if got := m.usageFooter(); got != "" {
+		t.Errorf("usageFooter on fixture without sessions should be empty, got %q", got)
 	}
 }
 
