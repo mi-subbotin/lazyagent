@@ -208,7 +208,7 @@ func scanMCPSettings(path string, scope model.Scope) []model.Item {
 			RawJSON:     parse.MCPToJSON(entry),
 			RawTOML:     parse.MCPToTOML(entry),
 			Storage:     model.StorageEntry,
-			ConfigKey:   "mcpServers/" + name,
+			ConfigKey:   parse.JoinKey("mcpServers", name),
 		})
 	}
 	return out

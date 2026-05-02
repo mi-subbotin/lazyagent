@@ -293,9 +293,16 @@ func scanMCPFile(path, projectKey string, scope model.Scope) []model.Item {
 
 	out := make([]model.Item, 0, len(servers))
 	for name, entry := range servers {
-		key := "mcpServers/" + name
+		// PRI-78: projectKey is an absolute path
+		// ("/Users/mihailsubbotin/Projects/lazyagent") whose embedded
+		// slashes used to collide with the slash separator in
+		// SplitKey, producing keys like
+		// "projects//Users/mihailsubbotin/Projects/lazyagent/..." that
+		// failed lookup. JoinKey escapes each segment via JSON-Pointer
+		// rules so the path round-trips intact.
+		key := parse.JoinKey("mcpServers", name)
 		if projectKey != "" {
-			key = "projects/" + projectKey + "/mcpServers/" + name
+			key = parse.JoinKey("projects", projectKey, "mcpServers", name)
 		}
 		out = append(out, model.Item{
 			Origin:      model.OriginClaude,

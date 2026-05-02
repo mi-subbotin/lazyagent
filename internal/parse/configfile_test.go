@@ -197,3 +197,75 @@ func TestDeleteMapKeyUnchanged(t *testing.T) {
 		t.Error("sibling key c was disturbed")
 	}
 }
+
+// PRI-78: Claude per-project MCP entries are keyed by absolute path
+// — "/Users/me/Projects/x" — whose embedded slashes used to collide
+// with the slash separator in SplitKey. JoinKey escapes each segment
+// and SplitKey decodes it, so paths round-trip without leaking into
+// the separator. Verified end-to-end: build a key with a path
+// segment, walk the resulting nested map with Get, retrieve the
+// expected value.
+func TestJoinKeySplitKeyRoundTripPathSegment(t *testing.T) {
+	abs := "/Users/me/Projects/x"
+	key := JoinKey("projects", abs, "mcpServers", "linear")
+	parts := SplitKey(key)
+	want := []string{"projects", abs, "mcpServers", "linear"}
+	if len(parts) != len(want) {
+		t.Fatalf("SplitKey len=%d; want %d (parts=%q)", len(parts), len(want), parts)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Errorf("part %d = %q; want %q", i, parts[i], want[i])
+		}
+	}
+}
+
+func TestEscapeKeySegmentRoundTrip(t *testing.T) {
+	cases := []string{
+		"plain",
+		"/Users/me/x",
+		"with~tilde",
+		"/has~/both",
+		"~01-tricky",
+	}
+	for _, c := range cases {
+		if got := UnescapeKeySegment(EscapeKeySegment(c)); got != c {
+			t.Errorf("round-trip %q → %q", c, got)
+		}
+	}
+}
+
+func TestGetWithEscapedPathKey(t *testing.T) {
+	// Simulate Claude .claude.json shape: projects → <abs path> →
+	// mcpServers → <name> → entry. JoinKey + Get must walk it
+	// transparently.
+	abs := "/Users/me/Projects/x"
+	tree := map[string]any{
+		"projects": map[string]any{
+			abs: map[string]any{
+				"mcpServers": map[string]any{
+					"linear": map[string]any{"command": "npx"},
+				},
+			},
+		},
+	}
+	key := JoinKey("projects", abs, "mcpServers", "linear")
+	got, ok := Get(tree, key)
+	if !ok {
+		t.Fatalf("Get failed for key %q", key)
+	}
+	m, ok := got.(map[string]any)
+	if !ok || m["command"] != "npx" {
+		t.Errorf("Got = %+v; want map with command=npx", got)
+	}
+}
+
+func TestSplitKeyEmptyAndPlain(t *testing.T) {
+	if SplitKey("") != nil {
+		t.Error("empty string should split to nil")
+	}
+	parts := SplitKey("a/b/c")
+	if len(parts) != 3 || parts[0] != "a" || parts[2] != "c" {
+		t.Errorf("plain split lost: %+v", parts)
+	}
+}

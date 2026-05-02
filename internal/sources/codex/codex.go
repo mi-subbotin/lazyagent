@@ -157,7 +157,7 @@ func scanConfig(path string, scope model.Scope) []model.Item {
 				RawJSON:     parse.MCPToJSON(entry),
 				RawTOML:     parse.MCPToTOML(entry),
 				Storage:     model.StorageEntry,
-				ConfigKey:   "mcp_servers/" + name,
+				ConfigKey:   parse.JoinKey("mcp_servers", name),
 			})
 		}
 	}
@@ -175,7 +175,7 @@ func scanConfig(path string, scope model.Scope) []model.Item {
 				RawJSON:     parse.MCPToJSON(entry),
 				RawTOML:     parse.MCPToTOML(entry),
 				Storage:     model.StorageEntry,
-				ConfigKey:   "profiles/" + name,
+				ConfigKey:   parse.JoinKey("profiles", name),
 			})
 		}
 	}

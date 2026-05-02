@@ -107,12 +107,52 @@ func Marshal(data map[string]any, f ConfigFormat) ([]byte, error) {
 }
 
 // SplitKey splits a slash-joined key path ("mcpServers/linear") into
-// component parts. An empty string returns nil.
+// component parts. An empty string returns nil. Segments are decoded
+// using the JSON-Pointer-inspired escape rules (~1 → /, ~0 → ~)
+// so callers can safely round-trip keys whose segments contain
+// slashes — chiefly Claude's per-project MCP entries keyed by
+// absolute path ("projects/<absolute path>/mcpServers/<name>").
 func SplitKey(k string) []string {
 	if k == "" {
 		return nil
 	}
-	return strings.Split(k, "/")
+	parts := strings.Split(k, "/")
+	for i, p := range parts {
+		parts[i] = UnescapeKeySegment(p)
+	}
+	return parts
+}
+
+// EscapeKeySegment encodes one segment of a slash-joined key so its
+// value can contain literal `/` and `~`. JSON-Pointer (RFC 6901)
+// rules: ~ becomes ~0 first, / becomes ~1 second. Order matters —
+// reversing it would turn `/` into `~1` then back into `~0/~01`.
+func EscapeKeySegment(s string) string {
+	s = strings.ReplaceAll(s, "~", "~0")
+	s = strings.ReplaceAll(s, "/", "~1")
+	return s
+}
+
+// UnescapeKeySegment is the inverse of EscapeKeySegment. Decode
+// order is the reverse of encode (~1 → /, then ~0 → ~) so a literal
+// `~1` in user data round-trips through `~01` and back to `~1`.
+func UnescapeKeySegment(s string) string {
+	s = strings.ReplaceAll(s, "~1", "/")
+	s = strings.ReplaceAll(s, "~0", "~")
+	return s
+}
+
+// JoinKey is the safe builder for slash-joined keys. Each segment
+// is escaped via EscapeKeySegment so values containing `/` (e.g.
+// project absolute paths) don't bleed into the separator. Use this
+// instead of `"a/" + b + "/c"` whenever any of the segments are
+// runtime data rather than constants.
+func JoinKey(segments ...string) string {
+	out := make([]string, len(segments))
+	for i, s := range segments {
+		out[i] = EscapeKeySegment(s)
+	}
+	return strings.Join(out, "/")
 }
 
 // Get walks a nested map[string]any / []any tree and returns the value

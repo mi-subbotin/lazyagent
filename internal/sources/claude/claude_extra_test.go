@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 )
 
 func TestNameAndFirstNonEmptyLine(t *testing.T) {
@@ -78,6 +79,18 @@ func TestScanMCPFile_PerProject(t *testing.T) {
 	}
 	if !strings.HasPrefix(got[0].ConfigKey, "projects/") {
 		t.Errorf("ConfigKey = %q, want projects/* prefix", got[0].ConfigKey)
+	}
+	// PRI-78: the ConfigKey must actually resolve when fed back into
+	// parse.ReadEntry. The previous "projects/" + abs path concat
+	// produced "projects//abs/proj/mcpServers/linear" which split to
+	// `["projects", "", "abs", "proj", ...]` and lost the entry.
+	val, _, err := parse.ReadEntry(path, got[0].ConfigKey)
+	if err != nil {
+		t.Fatalf("ReadEntry(%q) failed: %v", got[0].ConfigKey, err)
+	}
+	m, ok := val.(map[string]any)
+	if !ok || m["command"] != "npx" {
+		t.Errorf("ReadEntry returned %+v; want map with command=npx", val)
 	}
 }
 
