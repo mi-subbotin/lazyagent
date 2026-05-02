@@ -160,6 +160,49 @@ func TestScanSessionsBasenameLayout(t *testing.T) {
 	}
 }
 
+// TestScanSessionsStampsUsage — a session with per-message tokens
+// must populate the cost / usage Meta keys and embed the dollar
+// amount into Description (PRI-63 Phase 2).
+func TestScanSessionsStampsUsage(t *testing.T) {
+	home := t.TempDir()
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "abc", "chats")
+	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{
+		"sessionId":"S1",
+		"projectHash":"abc",
+		"lastUpdated":"2026-01-15T10:30:00.000Z",
+		"messages":[
+			{"id":"u1","timestamp":"2026-01-15T10:00:00.000Z","type":"user","content":"hi","model":"gemini-2.5-flash","tokens":{"input":1000000,"output":1000000,"cached":0,"total":2000000}}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(chatsDir, "session-x.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := scanSessions(filepath.Join(home, ".gemini"), "")
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	meta := items[0].Meta
+	if meta["usage_model"] != "gemini-2.5-flash" {
+		t.Errorf("usage_model=%q; want gemini-2.5-flash", meta["usage_model"])
+	}
+	if meta["usage_input"] != "1000000" {
+		t.Errorf("usage_input=%q; want 1000000", meta["usage_input"])
+	}
+	if meta["usage_output"] != "1000000" {
+		t.Errorf("usage_output=%q; want 1000000", meta["usage_output"])
+	}
+	// gemini-2.5-flash: 0.30 input + 2.50 output = $2.80
+	if meta["cost_usd"] == "" {
+		t.Errorf("expected cost_usd to be set")
+	}
+	if !strings.Contains(items[0].Description, "$2.80") {
+		t.Errorf("description=%q; want $2.80 substring", items[0].Description)
+	}
+}
+
 // TestScanSessionsMalformedSkipped — a non-JSON file in chats/ must
 // not crash the scanner; it's silently skipped like the rest of the
 // adapter.

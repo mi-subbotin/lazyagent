@@ -1,12 +1,14 @@
 package codex
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 )
 
 // requireSqlite3 skips the test when the system sqlite3 binary isn't
@@ -128,6 +130,51 @@ func TestScanCodexSessionsBasic(t *testing.T) {
 	// Preview comes from first_user_message.
 	if !strings.Contains(items[0].Name, "Build the parser") {
 		t.Errorf("preview missing in items[0].Name=%q", items[0].Name)
+	}
+}
+
+func TestScanCodexSessionsStampsUsage(t *testing.T) {
+	requireSqlite3(t)
+	parse.ResetCodexRolloutIndex()
+	t.Cleanup(parse.ResetCodexRolloutIndex)
+
+	home := t.TempDir()
+	codexHome := filepath.Join(home, ".codex")
+	dayDir := filepath.Join(codexHome, "sessions", "2026", "05", "01")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	uuid := "019de4e2-fa46-7b70-bb1b-9267d0903bb1"
+	rollout := filepath.Join(dayDir, "rollout-2026-05-01T15-52-53-"+uuid+".jsonl")
+	body := `{"type":"turn_context","payload":{"model":"gpt-5.5"}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10000,"cached_input_tokens":7000,"output_tokens":500,"total_tokens":10500}}}}` + "\n"
+	if err := os.WriteFile(rollout, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := "/Users/testfake/Projects/myapp"
+	seedDB(t, codexHome, []codexRow{
+		{ID: uuid, Cwd: projectDir, Title: "thread", FirstUser: "Hello", UpdatedAt: 1700000200},
+	})
+
+	items := scanSessions(codexHome, projectDir)
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	meta := items[0].Meta
+	if meta["usage_model"] != "gpt-5.5" {
+		t.Errorf("usage_model=%q; want gpt-5.5", meta["usage_model"])
+	}
+	if meta["usage_input"] != "3000" {
+		t.Errorf("usage_input=%q; want 3000 (10000-7000 cached)", meta["usage_input"])
+	}
+	if meta["usage_cache_read"] != "7000" {
+		t.Errorf("usage_cache_read=%q; want 7000", meta["usage_cache_read"])
+	}
+	if meta["cost_usd"] == "" {
+		t.Errorf("expected cost_usd to be stamped (gpt-5.5 is in rates table)")
+	}
+	if !strings.Contains(items[0].Description, "$") {
+		t.Errorf("expected $ in description, got %q", items[0].Description)
 	}
 }
 

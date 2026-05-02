@@ -46,23 +46,38 @@
     },
     "gpt-5": {
       "input": 1.25,
-      "output": 10.0
+      "output": 10.0,
+      "cache_read": 0.125
+    },
+    "gpt-5.5": {
+      "input": 1.25,
+      "output": 10.0,
+      "cache_read": 0.125
     },
     "gpt-5-mini": {
       "input": 0.25,
-      "output": 2.0
+      "output": 2.0,
+      "cache_read": 0.025
     },
     "gpt-4o": {
       "input": 2.50,
       "output": 10.0
     },
+    "gemini-3-pro-preview": {
+      "_note": "Preview tier — best-effort guess pinned to 2.5-pro until Google publishes official rates.",
+      "input": 1.25,
+      "output": 10.0,
+      "cache_read": 0.31
+    },
     "gemini-2.5-pro": {
       "input": 1.25,
-      "output": 10.0
+      "output": 10.0,
+      "cache_read": 0.31
     },
     "gemini-2.5-flash": {
       "input": 0.30,
-      "output": 2.50
+      "output": 2.50,
+      "cache_read": 0.075
     },
     "gemini-1.5-pro": {
       "input": 1.25,

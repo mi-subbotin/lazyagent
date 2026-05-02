@@ -20,6 +20,7 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/install"
 	"github.com/mi-subbotin/lazyagent/internal/logging"
 	"github.com/mi-subbotin/lazyagent/internal/model"
+	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/sources/claude"
 	"github.com/mi-subbotin/lazyagent/internal/sources/codex"
@@ -236,6 +237,11 @@ func main() {
 	}
 	m.SetDiscoveredProjects(initialProjects, *allLocal)
 
+	// PRI-63: hydrate the persistent usage cache so cold launches don't
+	// re-walk every multi-MB session jsonl. Best-effort — a missing or
+	// stale file falls back to in-memory rebuild.
+	_ = parse.LoadUsageCache()
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// PRI-19: spawn the weekly update poll in the background. The
@@ -263,6 +269,12 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "lazyagent:", err)
 		os.Exit(1)
+	}
+	// PRI-63: persist any usage entries the session populated. Failure
+	// is logged-only — users would resent a "save failed" surface on
+	// a normal quit.
+	if err := parse.SaveUsageCache(); err != nil {
+		slog.Warn("usage cache save failed", "err", err)
 	}
 }
 

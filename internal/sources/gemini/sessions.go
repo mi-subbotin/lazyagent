@@ -14,6 +14,7 @@ import (
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
+	"github.com/mi-subbotin/lazyagent/internal/pricing"
 )
 
 // cwdHash returns the per-project directory name Gemini CLI uses
@@ -226,6 +227,38 @@ func readGeminiSession(path, dirName, cwdFromMarker, projectDir string, privateH
 		meta["cwd"] = cwdFromMarker
 	}
 
+	desc := fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(mod))
+
+	// PRI-63: per-message usage grouped by model. Sessions can switch
+	// models mid-flight, so we sum cost across the per-model entries
+	// rather than pricing one aggregate against a single rate.
+	if usages, err := parse.ReadGeminiUsage(path); err == nil && len(usages) > 0 {
+		// Pick the most-recent model for the displayed `usage_model`.
+		latest := usages[len(usages)-1]
+		meta["usage_model"] = latest.Model
+		var inSum, outSum, cacheSum int64
+		for _, u := range usages {
+			inSum += u.InputTokens
+			outSum += u.OutputTokens
+			cacheSum += u.CacheReadTokens
+		}
+		meta["usage_input"] = strconv.FormatInt(inSum, 10)
+		meta["usage_output"] = strconv.FormatInt(outSum, 10)
+		meta["usage_cache_read"] = strconv.FormatInt(cacheSum, 10)
+		cost, allPriced := pricing.SumCost(usages)
+		if allPriced && cost > 0 {
+			meta["cost_usd"] = strconv.FormatFloat(cost, 'f', 4, 64)
+			desc = fmt.Sprintf("%s · $%.2f", desc, cost)
+		} else if cost > 0 {
+			meta["cost_usd"] = strconv.FormatFloat(cost, 'f', 4, 64)
+			meta["cost_partial"] = "1"
+			desc = fmt.Sprintf("%s · $%.2f+", desc, cost)
+		} else if total := pricing.SumTokens(usages); total > 0 {
+			meta["cost_unpriced"] = "1"
+			desc = fmt.Sprintf("%s · %s tok (unpriced)", desc, parse.FormatTokens(total))
+		}
+	}
+
 	return model.Item{
 		Origin:      model.OriginGemini,
 		Kind:        model.KindSession,
@@ -233,7 +266,7 @@ func readGeminiSession(path, dirName, cwdFromMarker, projectDir string, privateH
 		Private:     isPrivate,
 		Name:        preview,
 		Path:        path,
-		Description: fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(mod)),
+		Description: desc,
 		Body:        parse.SessionBody(firstUser, project, s.SessionID, mod),
 		Storage:     model.StorageFile,
 		ConfigKey:   s.SessionID,

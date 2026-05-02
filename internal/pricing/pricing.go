@@ -99,6 +99,35 @@ func Cost(u Usage) (float64, bool) {
 	return usd, true
 }
 
+// SumCost sums Cost(u) for each Usage in the slice. Returns the
+// aggregate USD cost and `allPriced=false` if any entry's model is
+// missing from the rates table — partial cost is still useful, but
+// the caller can render an "(partial)" badge when allPriced is false.
+// An empty slice returns (0, true).
+func SumCost(us []Usage) (float64, bool) {
+	total := 0.0
+	allPriced := true
+	for _, u := range us {
+		c, ok := Cost(u)
+		if !ok {
+			allPriced = false
+			continue
+		}
+		total += c
+	}
+	return total, allPriced
+}
+
+// SumTokens returns the combined Total() across a slice of Usage —
+// helper for the "unpriced" magnitude fallback.
+func SumTokens(us []Usage) int64 {
+	var n int64
+	for _, u := range us {
+		n += u.Total()
+	}
+	return n
+}
+
 // lookup matches a vendor-shaped model string against the rates table.
 // We do an exact match first, then strip a trailing date suffix
 // (claude-3-5-sonnet-20241022 → claude-3-5-sonnet) and try again, then

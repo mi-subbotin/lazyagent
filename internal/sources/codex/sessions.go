@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
+	"github.com/mi-subbotin/lazyagent/internal/pricing"
 )
 
 // scanSessions reads the threads table from ~/.codex/state_5.sqlite
@@ -57,12 +59,12 @@ func scanSessions(codexHome, projectDir string) []model.Item {
 	}
 	items := make([]model.Item, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, codexSessionItem(r.ID, r.Cwd, r.Title, r.FirstUser, r.UpdatedAt, projectDir))
+		items = append(items, codexSessionItem(codexHome, r.ID, r.Cwd, r.Title, r.FirstUser, r.UpdatedAt, projectDir))
 	}
 	return items
 }
 
-func codexSessionItem(id, cwd, title, firstUser string, updatedAt int64, projectDir string) model.Item {
+func codexSessionItem(codexHome, id, cwd, title, firstUser string, updatedAt int64, projectDir string) model.Item {
 	preview := parse.SessionPreview(firstUser, 80)
 	if preview == "" {
 		preview = parse.SessionPreview(title, 80)
@@ -83,6 +85,35 @@ func codexSessionItem(id, cwd, title, firstUser string, updatedAt int64, project
 		project = "(unknown)"
 	}
 
+	desc := fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(mod))
+	meta := map[string]string{
+		"sessionId":   id,
+		"cwd":         cwd,
+		"project":     project,
+		"title":       title,
+		"lastUpdated": mod.UTC().Format(time.RFC3339),
+	}
+
+	// PRI-63: rollout file carries token totals + model. Lookup is by
+	// UUID suffix in the rollout filename; the index walks
+	// ~/.codex/sessions once per process and is cached.
+	if rollout := parse.FindCodexRollout(codexHome, id); rollout != "" {
+		meta["rollout_path"] = rollout
+		if usage, err := parse.ReadCodexUsage(rollout); err == nil && (usage.InputTokens+usage.OutputTokens+usage.CacheReadTokens) > 0 {
+			meta["usage_model"] = usage.Model
+			meta["usage_input"] = strconv.FormatInt(usage.InputTokens, 10)
+			meta["usage_output"] = strconv.FormatInt(usage.OutputTokens, 10)
+			meta["usage_cache_read"] = strconv.FormatInt(usage.CacheReadTokens, 10)
+			if cost, ok := pricing.Cost(usage); ok {
+				meta["cost_usd"] = strconv.FormatFloat(cost, 'f', 4, 64)
+				desc = fmt.Sprintf("%s · $%.2f", desc, cost)
+			} else {
+				meta["cost_unpriced"] = "1"
+				desc = fmt.Sprintf("%s · %s tok (unpriced)", desc, parse.FormatTokens(usage.Total()))
+			}
+		}
+	}
+
 	return model.Item{
 		Origin:      model.OriginCodex,
 		Kind:        model.KindSession,
@@ -90,19 +121,13 @@ func codexSessionItem(id, cwd, title, firstUser string, updatedAt int64, project
 		Private:     private,
 		Name:        preview,
 		Path:        fmt.Sprintf("codex://thread/%s", id),
-		Description: fmt.Sprintf("%s · %s", project, parse.SessionFriendlyTime(mod)),
+		Description: desc,
 		Body:        parse.SessionBody(firstUser, project, id, mod),
 		// SQLite-backed; Storage / Path are placeholders (no on-disk
 		// file the editor / share machinery could open). The TUI
 		// short-circuits Codex sessions for actions it can't perform.
 		Storage:   model.StorageEntry,
 		ConfigKey: id,
-		Meta: map[string]string{
-			"sessionId":   id,
-			"cwd":         cwd,
-			"project":     project,
-			"title":       title,
-			"lastUpdated": mod.UTC().Format(time.RFC3339),
-		},
+		Meta:      meta,
 	}
 }

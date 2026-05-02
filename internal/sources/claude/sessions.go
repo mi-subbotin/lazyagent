@@ -200,7 +200,7 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 			desc = fmt.Sprintf("%s · $%.2f", desc, cost)
 		} else {
 			meta["cost_unpriced"] = "1"
-			desc = fmt.Sprintf("%s · %s tok (unpriced)", desc, formatTokens(usage.Total()))
+			desc = fmt.Sprintf("%s · %s tok (unpriced)", desc, parse.FormatTokens(usage.Total()))
 		}
 	}
 
@@ -227,21 +227,6 @@ func readClaudeSession(path, encodedDir, projectDir string) (model.Item, bool) {
 // the first message) handles older / alternative layouts.
 func isAgentPath(path string) bool {
 	return strings.Contains(filepath.ToSlash(path), "/subagents/")
-}
-
-// formatTokens renders a token count as 1.2k / 3.4M for compact list
-// rendering. Used in the unpriced fallback so users still see a
-// magnitude indicator next to sessions on models the rates table
-// doesn't cover yet.
-func formatTokens(n int64) string {
-	switch {
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	case n >= 1_000:
-		return fmt.Sprintf("%.1fk", float64(n)/1_000)
-	default:
-		return strconv.FormatInt(n, 10)
-	}
 }
 
 // extractClaudeMessageText handles both shapes the Claude jsonl uses

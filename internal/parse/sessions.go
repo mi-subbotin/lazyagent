@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -93,6 +94,21 @@ func SessionPreview(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// FormatTokens renders a token count as 1.2k / 3.4M for compact list
+// rendering. Used in the unpriced fallback so users still see a
+// magnitude indicator next to sessions on models the rates table
+// doesn't cover yet.
+func FormatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return strconv.FormatInt(n, 10)
+	}
 }
 
 // SessionFriendlyTime formats t as a relative duration ("3m ago",

@@ -17,6 +17,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/mi-subbotin/lazyagent/internal/actions"
+	"github.com/mi-subbotin/lazyagent/internal/budget"
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
@@ -197,6 +198,17 @@ type Model struct {
 	// chooser, conflict prompts and the final summary — share state
 	// in this struct.
 	installing *installOverlay
+
+	// usaging drives the `u` usage overlay (PRI-63). Read-only summary
+	// of per-session cost aggregated across origins / models /
+	// projects. Tab cycles the time window.
+	usaging *usageOverlay
+
+	// budgeting drives the `b` context-budget overlay (PRI-66).
+	// Estimates passive token cost of installed Skills / Agents /
+	// Memory / Prompts / MCP and rolls them up by Origin × Kind ×
+	// Scope. Tab cycles the reference window (Claude / Codex / Gemini).
+	budgeting *budgetOverlay
 
 	// PRI-19: update banner. updateAvailable carries the version the
 	// background goroutine fetched from GitHub when it is strictly
@@ -579,6 +591,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateFixOverlay(msg)
 		}
 
+		// Usage overlay (`u`): read-only cost summary. PRI-63.
+		if m.usaging != nil {
+			return m.updateUsageOverlay(msg)
+		}
+
+		// Budget overlay (`b`): read-only passive-context summary. PRI-66.
+		if m.budgeting != nil {
+			return m.updateBudgetOverlay(msg)
+		}
+
 		// Resync picker: c/t/esc.
 		if m.resyncPicker != nil {
 			return m.updateResyncPicker(msg)
@@ -852,6 +874,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "i":
 			m.installing = newInstallOverlay()
+			return m, nil
+		case "u":
+			m.usaging = newUsageOverlay()
+			return m, nil
+		case "b":
+			m.budgeting = newBudgetOverlay()
 			return m, nil
 		case "U":
 			it, ok := m.currentItem()
@@ -1867,6 +1895,8 @@ func helpText() string {
 		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
 		"  i        install from a github.com / gist URL\n" +
+		"  u        usage / cost summary across loaded sessions\n" +
+		"  b        context budget — passive token cost of installed items\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
 		"  A        toggle all-local mode (fold every discovered project's items)\n" +
 		"  B        toggle Mode B (per-project subgroups under Local; needs A)\n" +
@@ -2122,6 +2152,12 @@ func (m Model) View() string {
 	} else if m.fixing != nil {
 		body = overlay(body, fixOverlayText(*m.fixing),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.usaging != nil {
+		body = overlay(body, usageOverlayText(computeUsageStats(m.items, m.usaging.window, time.Now())),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.budgeting != nil {
+		body = overlay(body, budgetOverlayText(budget.Estimate(m.items), m.budgeting.window),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
 	switch {
@@ -2149,6 +2185,10 @@ func (m Model) View() string {
 		} else {
 			statusLine = " fix-all · j/k navigate · y apply fixable · esc cancel "
 		}
+	case m.usaging != nil:
+		statusLine = " usage · tab cycle window · esc close "
+	case m.budgeting != nil:
+		statusLine = " context budget · tab cycle reference · esc close "
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "
 	default:
