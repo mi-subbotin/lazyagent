@@ -128,18 +128,38 @@ func planResume(it model.Item, ctx ResumeContext) (resumePlan, error) {
 		return resumePlan{Argv: []string{"gemini", "--resume", idx}, Dir: dir}, nil
 
 	case model.OriginCodex:
-		return resumePlan{}, fmt.Errorf("%w: codex resume coming in a later slice", ErrResumeUnsupported)
+		sid := it.ConfigKey
+		if sid == "" {
+			return resumePlan{}, fmt.Errorf("%w: missing sessionId", ErrResumeUnsupported)
+		}
+		// `codex resume <UUID>` accepts a session id directly. Codex's
+		// default picker filters by current cwd, and `resume <UUID>`
+		// inherits the same filter — pin Cmd.Dir to the recorded cwd so
+		// the lookup doesn't refuse a session that lives in another
+		// project. Empty Meta["cwd"] (zombie / corrupt rows in
+		// state_5.sqlite) leaves Dir blank and codex falls back to its
+		// own behaviour.
+		return resumePlan{
+			Argv: []string{"codex", "resume", sid},
+			Dir:  it.Meta["cwd"],
+		}, nil
 	}
 	return resumePlan{}, fmt.Errorf("%w: unknown origin", ErrResumeUnsupported)
 }
 
-// geminiResumeDir picks the cwd to spawn gemini --resume from:
-//  1. Local-bucket sessions: cwd == projectDir (by construction —
+// geminiResumeDir picks the cwd to spawn gemini --resume from, in
+// order of confidence:
+//  1. Meta["cwd"] stamped by the adapter from a `.project_root`
+//     marker file (newer Gemini layout, ≥0.40). Strongest signal.
+//  2. Local-bucket sessions: cwd == projectDir (by construction —
 //     projectHash == sha256(projectDir)).
-//  2. Anything else: look up Meta["projectHash"] in the
-//     Claude-derived hash→cwd index. Covers the common case where the
-//     user has touched the same project with claude at some point.
+//  3. Look up Meta["projectHash"] in the Claude-derived hash→cwd
+//     index. Covers the common case where the user has touched the
+//     same project with claude at some point.
 func geminiResumeDir(it model.Item, ctx ResumeContext) (string, bool) {
+	if cwd := it.Meta["cwd"]; cwd != "" {
+		return cwd, true
+	}
 	if it.Scope == model.ScopeLocal && ctx.ProjectDir != "" {
 		return ctx.ProjectDir, true
 	}

@@ -119,10 +119,52 @@ func TestResumeCommandGeminiBadIndex(t *testing.T) {
 	}
 }
 
-func TestResumeCommandCodexUnsupported(t *testing.T) {
+func TestResumeCommandCodex(t *testing.T) {
+	it := model.Item{
+		Origin:    model.OriginCodex,
+		Kind:      model.KindSession,
+		ConfigKey: "019de4e2-fa46-7b70-bb1b-9267d0903bb1",
+		Meta:      map[string]string{"cwd": "/Users/foo/projC"},
+	}
+	cmd, err := ResumeCommand(it, ResumeContext{})
+	if err != nil {
+		t.Fatalf("ResumeCommand: %v", err)
+	}
+	if !strings.HasSuffix(cmd.Path, "codex") {
+		t.Errorf("expected codex binary, got %q", cmd.Path)
+	}
+	if got := cmd.Args[1:]; len(got) != 2 || got[0] != "resume" || got[1] != "019de4e2-fa46-7b70-bb1b-9267d0903bb1" {
+		t.Errorf("expected [resume <id>], got %v", got)
+	}
+	if cmd.Dir != "/Users/foo/projC" {
+		t.Errorf("expected Cmd.Dir=cwd from Meta, got %q", cmd.Dir)
+	}
+}
+
+func TestResumeCommandCodexMissingID(t *testing.T) {
 	it := model.Item{Origin: model.OriginCodex, Kind: model.KindSession}
 	if _, err := ResumeCommand(it, ResumeContext{}); !errors.Is(err, ErrResumeUnsupported) {
-		t.Errorf("codex must return ErrResumeUnsupported, got %v", err)
+		t.Errorf("codex without sessionId must return ErrResumeUnsupported, got %v", err)
+	}
+}
+
+// TestResumeCommandGeminiCwdMeta covers the newer Gemini layout where
+// the adapter stamps Meta["cwd"] directly from a .project_root marker.
+// Resume should pin Cmd.Dir straight from that, regardless of scope or
+// hash-index state.
+func TestResumeCommandGeminiCwdMeta(t *testing.T) {
+	it := model.Item{
+		Origin: model.OriginGemini,
+		Kind:   model.KindSession,
+		Scope:  model.ScopeGlobal,
+		Meta:   map[string]string{"index": "1", "cwd": "/Users/foo/from-marker"},
+	}
+	cmd, err := ResumeCommand(it, ResumeContext{})
+	if err != nil {
+		t.Fatalf("ResumeCommand: %v", err)
+	}
+	if cmd.Dir != "/Users/foo/from-marker" {
+		t.Errorf("Cmd.Dir = %q, want recovered cwd from marker", cmd.Dir)
 	}
 }
 

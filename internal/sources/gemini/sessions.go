@@ -62,40 +62,45 @@ type geminiSessionFile struct {
 }
 
 // scanSessions enumerates Gemini chat transcripts under
-// ~/.gemini/tmp/<projectHash>/chats/. Gemini's resume CLI uses a
-// per-project numeric index ("--resume 1" = newest in this project),
-// so adapter sorts within each projectHash and stamps Meta["index"]
-// before merging the per-project lists into one global stream.
+// ~/.gemini/tmp/<bucket>/chats/. Gemini's resume CLI uses a per-project
+// numeric index ("--resume 1" = newest in this project), so adapter
+// sorts within each bucket and stamps Meta["index"] before merging the
+// per-project lists into one global stream.
+//
+// Bucket naming changed across CLI versions: older Gemini releases used
+// sha256(cwd), newer ones (≥0.40) use the cwd basename plus a sibling
+// `.project_root` text file holding the absolute cwd. Both shapes can
+// coexist in the same tmp dir on a long-lived install. We treat the
+// dir name as opaque and rely on the JSON's own `projectHash` field
+// for the real hash, plus `.project_root` (when present) for the real
+// cwd.
 func scanSessions(geminiHome, projectDir string) []model.Item {
 	tmpDir := filepath.Join(geminiHome, "tmp")
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		return nil
 	}
-	localHash := ""
-	if projectDir != "" {
-		localHash = cwdHash(projectDir)
-	}
 	privateHashes := privateCwdHashSet()
 	var out []model.Item
-	for _, hashDir := range entries {
-		if !hashDir.IsDir() {
+	for _, dirEnt := range entries {
+		if !dirEnt.IsDir() {
 			continue
 		}
-		chatsDir := filepath.Join(tmpDir, hashDir.Name(), "chats")
+		dirName := dirEnt.Name()
+		bucketDir := filepath.Join(tmpDir, dirName)
+		chatsDir := filepath.Join(bucketDir, "chats")
 		files, err := os.ReadDir(chatsDir)
 		if err != nil {
 			continue
 		}
-		isLocal := localHash != "" && hashDir.Name() == localHash
-		_, isPrivate := privateHashes[hashDir.Name()]
+		cwdFromMarker := readProjectRoot(bucketDir)
 		var perProject []model.Item
 		for _, f := range files {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
 				continue
 			}
 			full := filepath.Join(chatsDir, f.Name())
-			it, ok := readGeminiSession(full, hashDir.Name(), isLocal, isPrivate)
+			it, ok := readGeminiSession(full, dirName, cwdFromMarker, projectDir, privateHashes)
 			if !ok {
 				continue
 			}
@@ -116,7 +121,19 @@ func scanSessions(geminiHome, projectDir string) []model.Item {
 	return out
 }
 
-func readGeminiSession(path, projectHash string, isLocal, isPrivate bool) (model.Item, bool) {
+// readProjectRoot returns the cwd recorded in `<bucketDir>/.project_root`
+// (newer Gemini releases) or "" when the marker is absent. The file is
+// a single line of plain text; we trim trailing newlines so the value
+// can be compared with filepath strings directly.
+func readProjectRoot(bucketDir string) string {
+	data, err := os.ReadFile(filepath.Join(bucketDir, ".project_root"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func readGeminiSession(path, dirName, cwdFromMarker, projectDir string, privateHashes map[string]struct{}) (model.Item, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return model.Item{}, false
@@ -136,13 +153,45 @@ func readGeminiSession(path, projectHash string, isLocal, isPrivate bool) (model
 		}
 	}
 
-	// Gemini doesn't record cwd in the transcript, only a hash of it.
-	// Show a short hash prefix so the user can still tell projects apart
-	// in the list. PRI-5 follow-up: optionally pre-compute hashes for
-	// known project dirs from ~/.lazyagent/config.toml so this becomes a
-	// real path.
+	// The canonical projectHash always lives in the JSON body and is
+	// sha256(cwd). Older Gemini releases happened to also use it as the
+	// parent directory name; newer ones don't, so we always trust the
+	// JSON over the directory name. Fall back to the dir name only when
+	// the file omits the field (very old shapes).
+	projectHash := s.ProjectHash
+	if projectHash == "" {
+		projectHash = dirName
+	}
+
+	// Local classification: prefer the marker file when present (exact
+	// path match), fall back to sha256(projectDir) match for buckets
+	// that predate `.project_root`.
+	isLocal := false
+	if projectDir != "" {
+		switch {
+		case cwdFromMarker != "" && cwdFromMarker == projectDir:
+			isLocal = true
+		case projectHash == cwdHash(projectDir):
+			isLocal = true
+		}
+	}
+
+	// Private classification can be triggered by either the recovered
+	// path (newer layout) or the precomputed hash set (older layout).
+	isPrivate := false
+	if cwdFromMarker != "" {
+		isPrivate = parse.IsPrivateSessionCwd(cwdFromMarker)
+	}
+	if !isPrivate {
+		_, isPrivate = privateHashes[projectHash]
+	}
+
+	// Project label for the detail panel: real basename when we know
+	// the cwd, hash prefix otherwise.
 	project := projectHash
-	if len(project) > 8 {
+	if cwdFromMarker != "" {
+		project = filepath.Base(cwdFromMarker)
+	} else if len(project) > 8 {
 		project = project[:8]
 	}
 
@@ -167,6 +216,16 @@ func readGeminiSession(path, projectHash string, isLocal, isPrivate bool) (model
 		scope = model.ScopeLocal
 	}
 
+	meta := map[string]string{
+		"sessionId":   s.SessionID,
+		"projectHash": projectHash,
+		"project":     project,
+		"lastUpdated": mod.UTC().Format(time.RFC3339),
+	}
+	if cwdFromMarker != "" {
+		meta["cwd"] = cwdFromMarker
+	}
+
 	return model.Item{
 		Origin:      model.OriginGemini,
 		Kind:        model.KindSession,
@@ -178,11 +237,6 @@ func readGeminiSession(path, projectHash string, isLocal, isPrivate bool) (model
 		Body:        parse.SessionBody(firstUser, project, s.SessionID, mod),
 		Storage:     model.StorageFile,
 		ConfigKey:   s.SessionID,
-		Meta: map[string]string{
-			"sessionId":   s.SessionID,
-			"projectHash": projectHash,
-			"project":     project,
-			"lastUpdated": mod.UTC().Format(time.RFC3339),
-		},
+		Meta:        meta,
 	}, true
 }

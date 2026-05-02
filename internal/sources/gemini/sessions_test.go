@@ -116,6 +116,48 @@ func TestScanSessionsLocalAndPrivateBuckets(t *testing.T) {
 	}
 }
 
+// TestScanSessionsBasenameLayout exercises the post-0.40 Gemini layout
+// where the per-project bucket is named by cwd basename (not sha256)
+// and a sibling `.project_root` file records the absolute cwd. The
+// scanner must classify the bucket as Local when the marker matches
+// projectDir, stamp Meta["cwd"] for the resume planner, and fall back
+// to the JSON's own `projectHash` for hash-keyed callers.
+func TestScanSessionsBasenameLayout(t *testing.T) {
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "Projects", "myapp")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bucket := filepath.Join(home, ".gemini", "tmp", "myapp")
+	chatsDir := filepath.Join(bucket, "chats")
+	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bucket, ".project_root"), []byte(projectDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realHash := cwdHash(projectDir)
+	body := `{"sessionId":"AAAA","projectHash":"` + realHash + `","lastUpdated":"2026-01-15T10:00:00Z","messages":[{"id":"m1","timestamp":"2026-01-15T10:00:00Z","type":"user","content":"hi"}]}`
+	if err := os.WriteFile(filepath.Join(chatsDir, "session-AAAA.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := scanSessions(filepath.Join(home, ".gemini"), projectDir)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	it := items[0]
+	if it.Scope != model.ScopeLocal {
+		t.Errorf("scope=%v, want Local (basename layout with matching .project_root)", it.Scope)
+	}
+	if it.Meta["cwd"] != projectDir {
+		t.Errorf("Meta[cwd]=%q, want %q", it.Meta["cwd"], projectDir)
+	}
+	if it.Meta["projectHash"] != realHash {
+		t.Errorf("Meta[projectHash]=%q, want sha256(cwd)=%q (must come from JSON, not dir name)", it.Meta["projectHash"], realHash)
+	}
+}
+
 // TestScanSessionsMalformedSkipped — a non-JSON file in chats/ must
 // not crash the scanner; it's silently skipped like the rest of the
 // adapter.
