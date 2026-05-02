@@ -42,6 +42,13 @@ type State struct {
 	LatestKnownVersion           string `json:"latest_known_version,omitempty"`
 	UpdateBannerDismissedFor     string `json:"update_banner_dismissed_for,omitempty"`
 	UpdateBannerDismissedDate    string `json:"update_banner_dismissed_date,omitempty"`
+
+	// PRI-75: form-mode editor preferences. EditorListMode controls
+	// how list/map fields (args, env, headers) render inside the form
+	// editor. Empty / "lines" = multi-line textarea, "fields" =
+	// dynamic add/remove rows. Toggled with ctrl+m inside the form;
+	// the new value persists as the next-open default.
+	EditorListMode string `json:"editor_list_mode,omitempty"`
 }
 
 // Path returns the absolute path to state.json. We co-locate it with

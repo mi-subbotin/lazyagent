@@ -210,6 +210,13 @@ type Model struct {
 	// Scope. Tab cycles the reference window (Claude / Codex / Gemini).
 	budgeting *budgetOverlay
 
+	// forming is the structured form-mode editor for StorageEntry
+	// items (PRI-75). Set when E is pressed on an entry whose
+	// schema matches; falls back to the JSON-textarea editor when
+	// no schema exists or the entry's shape is non-standard. ctrl+m
+	// toggles list/map presentation (lines vs fields), ctrl+s saves.
+	forming *formOverlay
+
 	// PRI-19: update banner. updateAvailable carries the version the
 	// background goroutine fetched from GitHub when it is strictly
 	// newer than the running build; updateURL is the release page;
@@ -601,6 +608,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateBudgetOverlay(msg)
 		}
 
+		// Form-mode editor (`E` on a schema'd entry). PRI-75.
+		if m.forming != nil {
+			return m.updateForm(msg)
+		}
+
 		// Resync picker: c/t/esc.
 		if m.resyncPicker != nil {
 			return m.updateResyncPicker(msg)
@@ -899,8 +911,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// StorageEntry items (Hook / MCP / codex profile) open in
-			// entry mode — buffer is just the JSON value at ConfigKey.
-			// Plain files open as-is.
+			// entry mode. PRI-75: try the form-mode editor first when
+			// a schema matches the entry shape; fall back to the JSON
+			// textarea editor when shape is non-standard or the kind
+			// has no schema.
+			if it.Storage == model.StorageEntry {
+				if f, ok := newFormOverlay(it); ok {
+					m.forming = f
+					return m, nil
+				}
+			}
 			ed, err := newEditorState(it)
 			if err != nil {
 				m.setToast("editor: " + err.Error())
@@ -1888,7 +1908,9 @@ func helpText() string {
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
 		"  e        open in $EDITOR (external)\n" +
-		"  E        edit in built-in editor (ctrl+s save · esc cancel)\n" +
+		"  E        edit in built-in editor — form for known entry shapes\n" +
+		"           (MCP / Hook), JSON textarea for plain files / unknown\n" +
+		"           entries; ctrl+s save · ctrl+m toggle list mode · esc cancel\n" +
 		"  n        create new Skill / Agent / Prompt\n" +
 		"  i        install from a github.com / gist URL\n" +
 		"  u        usage / cost summary across loaded sessions\n" +
@@ -2154,6 +2176,9 @@ func (m Model) View() string {
 	} else if m.budgeting != nil {
 		body = overlay(body, budgetOverlayText(budget.Estimate(m.items), m.budgeting.window),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.forming != nil {
+		body = overlay(body, formView(m.forming),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
 	switch {
@@ -2185,6 +2210,8 @@ func (m Model) View() string {
 		statusLine = " usage · tab cycle window · esc close "
 	case m.budgeting != nil:
 		statusLine = " context budget · tab cycle reference · esc close "
+	case m.forming != nil:
+		statusLine = " form · ctrl+s save · tab next · ctrl+m toggle list mode · esc cancel "
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "
 	default:
