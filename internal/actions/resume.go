@@ -124,7 +124,15 @@ func planResume(it model.Item, ctx ResumeContext) (resumePlan, error) {
 		}
 		dir, ok := geminiResumeDir(it, ctx)
 		if !ok {
-			return resumePlan{}, fmt.Errorf("%w: gemini needs the original cwd; rerun lazyagent from that project (or run claude there once so its hash is known)", ErrResumeUnsupported)
+			ph := it.Meta["projectHash"]
+			if ph == "" {
+				ph = "(missing)"
+			}
+			return resumePlan{}, fmt.Errorf(
+				"%w: gemini resume needs the original cwd. "+
+					"projectHash=%s; try `cd` into that project (or, if the dir was deleted, the session can no longer be resumed)",
+				ErrResumeUnsupported, ph,
+			)
 		}
 		return resumePlan{Argv: []string{"gemini", "--resume", idx}, Dir: dir}, nil
 
@@ -306,7 +314,13 @@ func buildHashCwdIndex(items []model.Item, home string) map[string]string {
 	}
 	if home != "" {
 		readGeminiProjectRoots(filepath.Join(home, ".gemini", "tmp"), add)
-		walkLikelyCwds(home, 4, add)
+		// Depth 5 catches Conductor and worktree shapes
+		// (~/conductor/workspaces/<proj>/<branch>/<sub>) plus the
+		// occasional `~/Foo/Bar/proj/sub` layout some users prefer.
+		// Each extra level roughly doubles cost, so 5 is the practical
+		// ceiling — past that the walker visits library trees and
+		// language-cache hierarchies that never host a real project.
+		walkLikelyCwds(home, 5, add)
 	}
 	return out
 }
