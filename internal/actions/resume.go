@@ -334,17 +334,25 @@ func buildHashCwdIndex(items []model.Item, home string) map[string]string {
 }
 
 // EnrichSessionCwds resolves the cwd for every Session item in items
-// (best-effort) and flags those whose project directory no longer
-// exists on disk. Idempotent.
+// (best-effort), flags those whose project directory no longer exists
+// on disk, and rewrites Meta["project"] to the basename of the git
+// repository's main worktree when cwd lives inside one. Idempotent.
 //
-// Resolution order:
+// Resolution order for cwd:
 //  1. Existing Meta["cwd"] (Claude and Codex always set it; Gemini
 //     sets it when a `.project_root` marker is present).
 //  2. Hash → cwd lookup by Meta["projectHash"]. Catches Gemini items
 //     in old-layout buckets.
 //
-// After resolution, Meta["cwd"] is set when known, and Meta["cwdGone"]
-// is "1" when os.Stat reports the path is missing (deleted projects).
+// Project label:
+//   - If cwd is inside a git repo, run `git -C cwd rev-parse
+//     --git-common-dir` (cached per cwd) to find the main worktree
+//     and use its basename. Worktrees and the main repo collapse into
+//     one project group — the same `ai-agent-improvado` umbrella
+//     covers `feature/AI-579` worktrees too.
+//   - Otherwise fall back to filepath.Base(cwd).
+//
+// Meta["cwdGone"] is "1" when os.Stat reports the path is missing.
 // The TUI uses cwdGone to dim such sessions, and the resume planner
 // refuses to spawn the upstream CLI against a missing cwd with a
 // targeted error message.
@@ -353,6 +361,29 @@ func EnrichSessionCwds(items []model.Item) {
 		return
 	}
 	idx := BuildHashCwdIndex(items)
+	_, lookErr := exec.LookPath("git")
+	gitAvailable := lookErr == nil
+	gitRoots := map[string]string{} // cwd → main-worktree path (cached)
+	projectLabel := func(cwd string) string {
+		if cwd == "" {
+			return ""
+		}
+		if !gitAvailable {
+			return filepath.Base(cwd)
+		}
+		if root, cached := gitRoots[cwd]; cached {
+			if root != "" {
+				return filepath.Base(root)
+			}
+			return filepath.Base(cwd)
+		}
+		root := gitProjectRoot(cwd)
+		gitRoots[cwd] = root
+		if root != "" {
+			return filepath.Base(root)
+		}
+		return filepath.Base(cwd)
+	}
 	for i := range items {
 		it := &items[i]
 		if it.Kind != model.KindSession {
@@ -373,10 +404,45 @@ func EnrichSessionCwds(items []model.Item) {
 		if cwd == "" {
 			continue
 		}
+		if name := projectLabel(cwd); name != "" {
+			oldProject := it.Meta["project"]
+			it.Meta["project"] = name
+			// Description was rendered at scan time as
+			// "<oldProject> · <time>". Patch the prefix in place so the
+			// detail panel matches the tree group label without a full
+			// re-render of every session body.
+			if oldProject != "" && oldProject != name && strings.HasPrefix(it.Description, oldProject+" ·") {
+				it.Description = name + it.Description[len(oldProject):]
+			}
+		}
 		if _, err := os.Stat(cwd); err != nil && os.IsNotExist(err) {
 			it.Meta["cwdGone"] = "1"
 		}
 	}
+}
+
+// gitProjectRoot returns the absolute path of the main worktree of
+// the git repository containing cwd, or "" if cwd isn't tracked. For
+// a worktree, this resolves to the main repo's working tree (not the
+// worktree itself), so multiple branches of the same project share a
+// single label in the Sessions tree.
+func gitProjectRoot(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return ""
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(cwd, common)
+	}
+	return filepath.Dir(common)
 }
 
 // readGeminiProjectRoots scans ~/.gemini/tmp/<bucket>/.project_root

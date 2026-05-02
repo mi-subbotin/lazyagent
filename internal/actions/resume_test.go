@@ -3,6 +3,7 @@ package actions
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,6 +232,84 @@ func TestEnrichSessionCwdsResolvesAndFlagsMissing(t *testing.T) {
 	}
 	if items[3].Meta["cwdGone"] != "" {
 		t.Errorf("non-session item must not be touched, got %q", items[3].Meta["cwdGone"])
+	}
+}
+
+// TestEnrichSessionCwdsRewritesProjectLabel verifies that
+// EnrichSessionCwds replaces the adapter-set short-hash project label
+// with the basename of the resolved cwd. Tests the non-git path: when
+// `git` isn't on PATH (or cwd isn't a repo), we fall back to
+// filepath.Base(cwd).
+func TestEnrichSessionCwdsRewritesProjectLabel(t *testing.T) {
+	dir := t.TempDir()
+	cwd := filepath.Join(dir, "myproj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	items := []model.Item{
+		{
+			Origin:      model.OriginGemini,
+			Kind:        model.KindSession,
+			Description: "076e7c55 · today",
+			Meta: map[string]string{
+				"cwd":         cwd,
+				"project":     "076e7c55", // hash prefix from adapter
+				"projectHash": "076e7c55b9606ec1a2e54e9405faf6a364f68eb5cffa16b9afe2e15078cabf4e",
+			},
+		},
+	}
+	EnrichSessionCwds(items)
+	if items[0].Meta["project"] != "myproj" {
+		t.Errorf("project=%q, want basename %q", items[0].Meta["project"], "myproj")
+	}
+	if !strings.HasPrefix(items[0].Description, "myproj ·") {
+		t.Errorf("Description not patched: %q", items[0].Description)
+	}
+}
+
+// TestEnrichSessionCwdsGroupsGitWorktrees plants a tiny git repo with
+// a worktree, then verifies sessions for both the main worktree and
+// the feature worktree end up under the same Meta["project"] label.
+func TestEnrichSessionCwdsGroupsGitWorktrees(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "ai-agent-improvado")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(workdir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workdir
+		// Hermetic config — don't pick up the dev's user.email or pgp
+		// signing settings.
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(main, "init", "-b", "main")
+	run(main, "commit", "--allow-empty", "-m", "init")
+	worktree := filepath.Join(dir, "ai-agent-improvado-feature-AI-579")
+	run(main, "worktree", "add", "-b", "feature/AI-579", worktree)
+
+	items := []model.Item{
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": main, "project": "ai-agent-improvado"}},
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": worktree, "project": "ai-agent-improvado-feature-AI-579"}},
+	}
+	EnrichSessionCwds(items)
+
+	if got := items[0].Meta["project"]; got != "ai-agent-improvado" {
+		t.Errorf("main repo project=%q, want ai-agent-improvado", got)
+	}
+	if got := items[1].Meta["project"]; got != "ai-agent-improvado" {
+		t.Errorf("worktree project=%q, want ai-agent-improvado (collapse with main)", got)
 	}
 }
 
