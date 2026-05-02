@@ -124,10 +124,12 @@ func TestScanSessionsLocalAndPrivateBuckets(t *testing.T) {
 // to the JSON's own `projectHash` for hash-keyed callers.
 func TestScanSessionsBasenameLayout(t *testing.T) {
 	home := t.TempDir()
-	projectDir := filepath.Join(home, "Projects", "myapp")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// projectDir is used only as a string — for `.project_root` content
+	// and for the Local-bucket comparison. We deliberately don't mkdir
+	// it under t.TempDir() because on Linux that lives under /tmp,
+	// which parse.IsPrivateSessionCwd correctly classifies as Private,
+	// flipping Scope back to Global and breaking the test on CI.
+	projectDir := "/Users/test/Projects/myapp"
 	bucket := filepath.Join(home, ".gemini", "tmp", "myapp")
 	chatsDir := filepath.Join(bucket, "chats")
 	if err := os.MkdirAll(chatsDir, 0o755); err != nil {
