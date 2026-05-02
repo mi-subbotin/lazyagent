@@ -326,6 +326,19 @@ type externalEditDoneMsg struct {
 	err  error
 }
 
+// externalEntryEditDoneMsg arrives after $EDITOR exits for an
+// entry-fragment edit (PRI-76). The TUI then parses the temp file,
+// commits the change via parse.WriteEntry, and removes the temp.
+// Carrying the item by value keeps the closure in `e`-handler small
+// and lets the message handler do the post-edit work without a
+// global reference.
+type externalEntryEditDoneMsg struct {
+	item     model.Item
+	tempPath string
+	cleanup  func()
+	err      error
+}
+
 // resumeDoneMsg arrives after the upstream CLI (claude / gemini / codex)
 // spawned via tea.ExecProcess for `R` on a KindSession item exits. The
 // session's transcript almost always grew during the resume, so we
@@ -500,6 +513,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setToast("editor: " + msg.err.Error())
 		}
+		m.loading = true
+		return m, m.loadCmd()
+
+	case externalEntryEditDoneMsg:
+		// PRI-76: $EDITOR closed on a temp JSON fragment. Commit the
+		// change back into the underlying config; on JSON parse
+		// failure leave the on-disk entry untouched and surface a
+		// toast so the user knows nothing was saved.
+		defer msg.cleanup()
+		if msg.err != nil {
+			m.setToast("editor: " + msg.err.Error())
+			return m, nil
+		}
+		if err := actions.CommitEntryEdit(msg.item, msg.tempPath); err != nil {
+			m.setToast("edit aborted: " + err.Error())
+			return m, nil
+		}
+		// Same cache-invalidation pattern as externalEditDoneMsg —
+		// the underlying file changed even though we wrote it from
+		// a different path.
+		for k := range m.glamourCache {
+			if strings.HasPrefix(k, msg.item.Path+"|") {
+				delete(m.glamourCache, k)
+			}
+		}
+		m.setToast("entry saved")
 		m.loading = true
 		return m, m.loadCmd()
 
@@ -866,6 +905,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			it, ok := m.currentItem()
 			if !ok {
 				return m, nil
+			}
+			// PRI-76: StorageEntry items get an entry-only temp file —
+			// $EDITOR opens a JSON fragment matching the detail panel,
+			// not the whole settings.json / .claude.json / config.toml.
+			if it.Storage == model.StorageEntry {
+				tempPath, cleanup, err := actions.PrepareEntryEdit(it)
+				if err != nil {
+					m.setToast("editor: " + err.Error())
+					return m, nil
+				}
+				cmd, err := actions.EditorCommand(tempPath)
+				if err != nil {
+					cleanup()
+					m.setToast("editor: " + err.Error())
+					return m, nil
+				}
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					return externalEntryEditDoneMsg{
+						item:     it,
+						tempPath: tempPath,
+						cleanup:  cleanup,
+						err:      err,
+					}
+				})
 			}
 			cmd, err := actions.EditorCommand(it.Path)
 			if err != nil {
@@ -1844,7 +1907,12 @@ func (m Model) defaultStatusLine() string {
 	if !n.isGroup && !n.isEmpty {
 		it := m.items[n.itemIdx]
 		ctx := []string{"tab/enter open", "e edit"}
-		if it.Storage != model.StorageEntry {
+		if it.Storage == model.StorageEntry {
+			// PRI-76: surface the inline / form-mode editor on
+			// StorageEntry rows so the user discovers it without
+			// hunting through `?` help.
+			ctx = append(ctx, "E form")
+		} else {
 			ctx = append(ctx, "E inline")
 		}
 		if it.Kind == model.KindMCP || it.Storage == model.StorageEntry {
@@ -1907,7 +1975,9 @@ func helpText() string {
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
-		"  e        open in $EDITOR (external)\n" +
+		"  e        open in $EDITOR — for StorageEntry items (MCP / Hook /\n" +
+		"           codex profile) it edits a temp JSON fragment, not the\n" +
+		"           whole config; the entry is written back on save\n" +
 		"  E        edit in built-in editor — form for known entry shapes\n" +
 		"           (MCP / Hook), JSON textarea for plain files / unknown\n" +
 		"           entries; ctrl+s save · ctrl+m toggle list mode · esc cancel\n" +
