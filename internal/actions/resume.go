@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -260,15 +261,23 @@ func osaQuote(s string) string {
 // BuildHashCwdIndex returns a sha256(cwd) → cwd map used by
 // ResumeContext to recover the original cwd of a Gemini session
 // (whose on-disk projectHash is one-way). The map is populated from
-// two sources, in order of confidence:
+// three sources, in order of confidence:
 //
 //  1. Claude jsonl transcripts that record cwd directly. Highest
 //     confidence — those are paths the user has already used Claude
 //     in.
-//  2. Best-effort walk of $HOME up to depth 4, skipping noise
+//  2. Gemini ≥0.40 `.project_root` marker files under
+//     ~/.gemini/tmp/<basename>/. Each holds an absolute cwd; the same
+//     cwd may also have a sibling sha256-named bucket left over from
+//     older releases, and that older bucket is exactly the case the
+//     hash index needs to rescue.
+//  3. Best-effort walk of $HOME up to depth 4, skipping noise
 //     directories (node_modules, vendor, .git). Catches projects the
-//     user has touched only with Gemini, at the cost of a few ms of
-//     stat traffic at startup.
+//     user has touched only with Gemini in old layout, at the cost
+//     of a few ms of stat traffic at startup.
+//  4. Item Meta["cwd"] from any session origin (Codex sqlite rows,
+//     Gemini sessions stamped via .project_root). Cheap and folds in
+//     paths the walker would have missed (external volumes, etc.).
 func BuildHashCwdIndex(items []model.Item) map[string]string {
 	home, _ := os.UserHomeDir()
 	return buildHashCwdIndex(items, home)
@@ -278,25 +287,49 @@ func BuildHashCwdIndex(items []model.Item) map[string]string {
 // keep them hermetic (no walk over the dev's actual $HOME).
 func buildHashCwdIndex(items []model.Item, home string) map[string]string {
 	out := map[string]string{}
-	for _, it := range items {
-		if it.Origin != model.OriginClaude || it.Kind != model.KindSession {
-			continue
-		}
-		cwd := it.Meta["cwd"]
+	add := func(cwd string) {
 		if cwd == "" {
+			return
+		}
+		h := sha256SumHex(cwd)
+		if _, exists := out[h]; !exists {
+			out[h] = cwd
+		}
+	}
+	for _, it := range items {
+		if it.Kind != model.KindSession {
 			continue
 		}
-		out[sha256SumHex(cwd)] = cwd
+		if it.Origin == model.OriginClaude || it.Origin == model.OriginGemini || it.Origin == model.OriginCodex {
+			add(it.Meta["cwd"])
+		}
 	}
 	if home != "" {
-		walkLikelyCwds(home, 4, func(path string) {
-			h := sha256SumHex(path)
-			if _, exists := out[h]; !exists {
-				out[h] = path
-			}
-		})
+		readGeminiProjectRoots(filepath.Join(home, ".gemini", "tmp"), add)
+		walkLikelyCwds(home, 4, add)
 	}
 	return out
+}
+
+// readGeminiProjectRoots scans ~/.gemini/tmp/<bucket>/.project_root
+// files and feeds each absolute cwd to visit. Cheap — at most a few
+// dozen tiny reads. We don't try to filter; visit dedupes itself via
+// the closure-captured map.
+func readGeminiProjectRoots(tmpDir string, visit func(string)) {
+	ents, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(tmpDir, e.Name(), ".project_root"))
+		if err != nil {
+			continue
+		}
+		visit(strings.TrimSpace(string(data)))
+	}
 }
 
 // walkLikelyCwds visits root and every descendant directory up to

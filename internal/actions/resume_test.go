@@ -197,6 +197,41 @@ func TestBuildHashCwdIndexFromClaudeItems(t *testing.T) {
 	}
 }
 
+// TestBuildHashCwdIndexFromGeminiProjectRoots covers the Gemini ≥0.40
+// rescue path: a `.project_root` marker under ~/.gemini/tmp/<bucket>/
+// gives us back the absolute cwd, and we hash it so old-layout
+// (sha256-named) buckets for the same project become resolvable.
+func TestBuildHashCwdIndexFromGeminiProjectRoots(t *testing.T) {
+	fakeHome := t.TempDir()
+	cwd := "/Users/foo/Projects/myapp"
+	bucket := fakeHome + "/.gemini/tmp/myapp"
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bucket+"/.project_root", []byte(cwd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := buildHashCwdIndex(nil, fakeHome)
+	if got[sha256SumHex(cwd)] != cwd {
+		t.Errorf("expected sha256(%q)→%q in index, got %v", cwd, cwd, got)
+	}
+}
+
+// TestBuildHashCwdIndexFromGeminiSessionItems verifies that Meta["cwd"]
+// stamped by the gemini adapter (from .project_root) folds into the
+// hash index just like Claude cwds — and is enough to resolve another
+// session in an old-layout bucket whose projectHash is sha256(cwd).
+func TestBuildHashCwdIndexFromGeminiSessionItems(t *testing.T) {
+	cwd := "/Users/foo/projG"
+	items := []model.Item{
+		{Origin: model.OriginGemini, Kind: model.KindSession, Meta: map[string]string{"cwd": cwd}},
+	}
+	got := buildHashCwdIndex(items, "")
+	if got[sha256SumHex(cwd)] != cwd {
+		t.Errorf("expected gemini cwd in index, got %v", got)
+	}
+}
+
 // TestBuildHashCwdIndexWalksHome plants a directory tree under a fake
 // $HOME and verifies the walker hashes the project subdir we care
 // about, while skipping noise dirs (.git, node_modules) and dirs
