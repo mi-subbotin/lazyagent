@@ -93,6 +93,14 @@ func planResume(it model.Item, ctx ResumeContext) (resumePlan, error) {
 	if it.Kind != model.KindSession {
 		return resumePlan{}, fmt.Errorf("%w: not a session", ErrResumeUnsupported)
 	}
+	if it.Meta["cwdGone"] == "1" {
+		cwd := it.Meta["cwd"]
+		return resumePlan{}, fmt.Errorf(
+			"%w: project dir was deleted (%s). transcript is still readable here; "+
+				"to actually resume, run `mkdir -p %s` first — file context will be empty",
+			ErrResumeUnsupported, cwd, shellQuote(cwd),
+		)
+	}
 	switch it.Origin {
 	case model.OriginClaude:
 		sid := it.ConfigKey
@@ -323,6 +331,52 @@ func buildHashCwdIndex(items []model.Item, home string) map[string]string {
 		walkLikelyCwds(home, 5, add)
 	}
 	return out
+}
+
+// EnrichSessionCwds resolves the cwd for every Session item in items
+// (best-effort) and flags those whose project directory no longer
+// exists on disk. Idempotent.
+//
+// Resolution order:
+//  1. Existing Meta["cwd"] (Claude and Codex always set it; Gemini
+//     sets it when a `.project_root` marker is present).
+//  2. Hash → cwd lookup by Meta["projectHash"]. Catches Gemini items
+//     in old-layout buckets.
+//
+// After resolution, Meta["cwd"] is set when known, and Meta["cwdGone"]
+// is "1" when os.Stat reports the path is missing (deleted projects).
+// The TUI uses cwdGone to dim such sessions, and the resume planner
+// refuses to spawn the upstream CLI against a missing cwd with a
+// targeted error message.
+func EnrichSessionCwds(items []model.Item) {
+	if len(items) == 0 {
+		return
+	}
+	idx := BuildHashCwdIndex(items)
+	for i := range items {
+		it := &items[i]
+		if it.Kind != model.KindSession {
+			continue
+		}
+		if it.Meta == nil {
+			it.Meta = map[string]string{}
+		}
+		cwd := it.Meta["cwd"]
+		if cwd == "" {
+			if h := it.Meta["projectHash"]; h != "" {
+				if c, ok := idx[h]; ok {
+					cwd = c
+					it.Meta["cwd"] = cwd
+				}
+			}
+		}
+		if cwd == "" {
+			continue
+		}
+		if _, err := os.Stat(cwd); err != nil && os.IsNotExist(err) {
+			it.Meta["cwdGone"] = "1"
+		}
+	}
 }
 
 // readGeminiProjectRoots scans ~/.gemini/tmp/<bucket>/.project_root

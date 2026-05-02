@@ -409,6 +409,12 @@ func (m Model) loadCmd() tea.Cmd {
 			}
 			it.Drift = store.IsDriftedAgainst(*it, canonical)
 		}
+		// Resolve cwd for every session and flag the ones whose project
+		// directory was deleted. The flag drives a dim "(cwd gone)"
+		// badge in the tree and a targeted resume error — without it,
+		// users can't tell a resumable session from an archived one
+		// until they actually press R.
+		actions.EnrichSessionCwds(all)
 		return itemsLoadedMsg{items: all}
 	}
 }
@@ -2262,6 +2268,7 @@ func (m Model) renderTree(w, h int) string {
 			drifted := false
 			invalid := false
 			warning := false
+			cwdGone := false
 			// (s) badge for items that resolve into the lazyagent shared
 			// store. Cheap signal that the bytes are canonical and the
 			// item shows up under multiple Origins simultaneously. Skip
@@ -2294,6 +2301,14 @@ func (m Model) renderTree(w, h int) string {
 					label += " (?)"
 					warning = true
 				}
+				// Sessions whose project dir was deleted from disk —
+				// transcript is still readable, but `R` would only
+				// produce a confusing upstream-CLI failure. Mark
+				// visually so the user knows resume won't work.
+				if it.Meta["cwdGone"] == "1" {
+					label += " (cwd gone)"
+					cwdGone = true
+				}
 			}
 			raw = indent + "  " + label
 			raw = truncRunes(raw, contentW)
@@ -2305,6 +2320,10 @@ func (m Model) renderTree(w, h int) string {
 				styled = driftStyle.Render(raw)
 			case warning:
 				styled = warnStyle.Render(raw)
+			case cwdGone:
+				// Dim — same treatment as empty-group placeholders.
+				// Lower weight than (drift) since this isn't user-fixable.
+				styled = dimStyle.Render(raw)
 			}
 		}
 		if i == m.cursor && m.focus == focusTree {

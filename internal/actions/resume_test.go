@@ -3,6 +3,7 @@ package actions
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -165,6 +166,71 @@ func TestResumeCommandGeminiCwdMeta(t *testing.T) {
 	}
 	if cmd.Dir != "/Users/foo/from-marker" {
 		t.Errorf("Cmd.Dir = %q, want recovered cwd from marker", cmd.Dir)
+	}
+}
+
+// TestPlanResumeCwdGone exercises the dedicated error path for
+// sessions whose project dir was deleted. Must trip before any
+// per-Origin logic so Codex/Claude/Gemini all share the same toast
+// message.
+func TestPlanResumeCwdGone(t *testing.T) {
+	for _, origin := range []model.Origin{model.OriginClaude, model.OriginGemini, model.OriginCodex} {
+		it := model.Item{
+			Origin:    origin,
+			Kind:      model.KindSession,
+			ConfigKey: "x",
+			Meta:      map[string]string{"cwd": "/no/such/path", "cwdGone": "1", "index": "1"},
+		}
+		_, err := ResumeCommand(it, ResumeContext{})
+		if !errors.Is(err, ErrResumeUnsupported) {
+			t.Errorf("%v: want ErrResumeUnsupported, got %v", origin, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "deleted") {
+			t.Errorf("%v: error should mention 'deleted', got %q", origin, err)
+		}
+	}
+}
+
+func TestEnrichSessionCwdsResolvesAndFlagsMissing(t *testing.T) {
+	existing := t.TempDir()
+	missing := filepath.Join(existing, "nope-removed")
+	hashOfMissing := sha256SumHex(missing)
+
+	items := []model.Item{
+		// Claude with cwd that exists — no cwdGone, untouched.
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": existing}},
+		// Claude with cwd that's gone — should be flagged.
+		{Origin: model.OriginClaude, Kind: model.KindSession, Meta: map[string]string{"cwd": missing}},
+		// Gemini with only projectHash — index supplies cwd, then
+		// existence check trips since the dir is missing.
+		{Origin: model.OriginGemini, Kind: model.KindSession, Meta: map[string]string{"projectHash": hashOfMissing}},
+		// Non-session: ignored entirely.
+		{Origin: model.OriginClaude, Kind: model.KindSkill, Meta: map[string]string{"cwd": missing}},
+	}
+	// Seed the hash-index source: a Claude item with the missing cwd
+	// is enough — BuildHashCwdIndex pulls it from Meta["cwd"].
+	items = append(items, model.Item{
+		Origin: model.OriginClaude,
+		Kind:   model.KindSession,
+		Meta:   map[string]string{"cwd": missing},
+	})
+
+	EnrichSessionCwds(items)
+
+	if items[0].Meta["cwdGone"] != "" {
+		t.Errorf("session 0 (existing cwd) should not be flagged, got %q", items[0].Meta["cwdGone"])
+	}
+	if items[1].Meta["cwdGone"] != "1" {
+		t.Errorf("session 1 (deleted cwd) should be flagged, got %q", items[1].Meta["cwdGone"])
+	}
+	if items[2].Meta["cwd"] != missing {
+		t.Errorf("session 2 should have cwd resolved via hash, got %q", items[2].Meta["cwd"])
+	}
+	if items[2].Meta["cwdGone"] != "1" {
+		t.Errorf("session 2 should be flagged after resolution, got %q", items[2].Meta["cwdGone"])
+	}
+	if items[3].Meta["cwdGone"] != "" {
+		t.Errorf("non-session item must not be touched, got %q", items[3].Meta["cwdGone"])
 	}
 }
 
