@@ -402,6 +402,15 @@ func EnrichSessionCwds(items []model.Item) {
 			}
 		}
 		if cwd == "" {
+			// Gemini sessions in old-layout buckets that we couldn't
+			// reverse-resolve into a real path are technical leftovers
+			// — usually for projects that have been deleted or live
+			// outside any indexed root. Their tree label is a useless
+			// 8-hex prefix; route them to the Private subgroup so the
+			// `H` toggle hides them by default.
+			if it.Origin == model.OriginGemini && isShortHexLabel(it.Meta["project"]) {
+				it.Private = true
+			}
 			continue
 		}
 		if name := projectLabel(cwd); name != "" {
@@ -419,6 +428,23 @@ func EnrichSessionCwds(items []model.Item) {
 			it.Meta["cwdGone"] = "1"
 		}
 	}
+}
+
+// isShortHexLabel matches the 8-lowercase-hex placeholder the gemini
+// adapter stamps as the project label when no `.project_root` marker
+// is present. The pattern is narrow on purpose — real project basenames
+// almost never satisfy it (mixed case, separators, length).
+func isShortHexLabel(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // gitProjectRoot returns the absolute path of the main worktree of

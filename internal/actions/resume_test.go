@@ -235,6 +235,51 @@ func TestEnrichSessionCwdsResolvesAndFlagsMissing(t *testing.T) {
 	}
 }
 
+func TestIsShortHexLabel(t *testing.T) {
+	cases := map[string]bool{
+		"076e7c55":   true,
+		"0f2abfdb":   true,
+		"deadbeef":   true,
+		"DEADBEEF":   false, // uppercase rejected — adapter stamps lowercase
+		"abc12":      false, // wrong length
+		"076e7c55x":  false, // 9 chars
+		"lazyagent":  false, // real basename of similar length
+		"":           false,
+		"trader":     false,
+		"076e-c55":   false, // separator
+	}
+	for in, want := range cases {
+		if got := isShortHexLabel(in); got != want {
+			t.Errorf("isShortHexLabel(%q)=%v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestEnrichSessionCwdsHidesUnresolvedGeminiHashes confirms that a
+// Gemini session whose hash bucket can't be reverse-mapped is moved
+// to Private so it disappears under the H-toggled Private subgroup.
+// Other origins (Claude/Codex) keep their visibility because they
+// always carry a real cwd.
+func TestEnrichSessionCwdsHidesUnresolvedGeminiHashes(t *testing.T) {
+	items := []model.Item{
+		{
+			Origin: model.OriginGemini, Kind: model.KindSession,
+			Meta: map[string]string{"project": "076e7c55", "projectHash": "076e7c55b9606ec1a2e54e9405faf6a364f68eb5cffa16b9afe2e15078cabf4e"},
+		},
+		{
+			Origin: model.OriginClaude, Kind: model.KindSession,
+			Meta: map[string]string{"project": "abcdef12"}, // hash-shaped but Claude — keep visible
+		},
+	}
+	EnrichSessionCwds(items)
+	if !items[0].Private {
+		t.Errorf("unresolved Gemini hash should be marked Private, got Private=%v", items[0].Private)
+	}
+	if items[1].Private {
+		t.Errorf("Claude session must not be auto-hidden, got Private=true")
+	}
+}
+
 // TestEnrichSessionCwdsRewritesProjectLabel verifies that
 // EnrichSessionCwds replaces the adapter-set short-hash project label
 // with the basename of the resolved cwd. Tests the non-git path: when
