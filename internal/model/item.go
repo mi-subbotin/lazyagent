@@ -83,7 +83,13 @@ func (k Kind) String() string {
 	case KindMCP:
 		return "MCP"
 	case KindPrompt:
-		return "Prompts"
+		// Display as "Commands" — that's what Claude Code calls the
+		// ~/.claude/commands/*.md slash-command files, and most users
+		// reach for this kind to find /grill-me / /jira / etc. The
+		// internal enum name (KindPrompt) is kept to avoid churning
+		// 50+ unrelated source/test references; only the rendered
+		// label changes.
+		return "Commands"
 	case KindMemory:
 		return "Memory"
 	case KindSession:
@@ -103,7 +109,10 @@ func ParseKind(s string) (Kind, bool) {
 		return KindAgent, true
 	case "MCP":
 		return KindMCP, true
-	case "Prompts":
+	case "Commands", "Prompts":
+		// "Prompts" preserved for backward compatibility with older
+		// state.json / config.toml that might persist the legacy
+		// label.
 		return KindPrompt, true
 	case "Memory":
 		return KindMemory, true

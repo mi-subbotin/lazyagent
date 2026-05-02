@@ -161,7 +161,7 @@ func kindShort(k model.Kind) string {
 	case model.KindMCP:
 		return "MCP"
 	case model.KindPrompt:
-		return "Prompt"
+		return "Command"
 	case model.KindMemory:
 		return "Memory"
 	case model.KindHook:

@@ -40,7 +40,7 @@ func TestKindRoundTrip(t *testing.T) {
 		{KindSkill, "Skills"},
 		{KindAgent, "Agents"},
 		{KindMCP, "MCP"},
-		{KindPrompt, "Prompts"},
+		{KindPrompt, "Commands"},
 		{KindMemory, "Memory"},
 		{KindSession, "Sessions"},
 		{KindHook, "Hooks"},
@@ -51,7 +51,7 @@ func TestKindRoundTrip(t *testing.T) {
 			t.Errorf("Kind(%d).String() = %q, want %q", tc.k, got, tc.want)
 		}
 	}
-	for _, name := range []string{"Skills", "Agents", "MCP", "Prompts", "Memory", "Sessions", "Hooks"} {
+	for _, name := range []string{"Skills", "Agents", "MCP", "Commands", "Memory", "Sessions", "Hooks"} {
 		k, ok := ParseKind(name)
 		if !ok {
 			t.Errorf("ParseKind(%q) returned ok=false", name)
@@ -59,6 +59,10 @@ func TestKindRoundTrip(t *testing.T) {
 		if k.String() != name {
 			t.Errorf("round-trip %q → %q", name, k.String())
 		}
+	}
+	// Legacy alias still parses (state.json from older versions).
+	if k, ok := ParseKind("Prompts"); !ok || k != KindPrompt {
+		t.Errorf("ParseKind(\"Prompts\") legacy alias broken: ok=%v k=%v", ok, k)
 	}
 	if _, ok := ParseKind("Whatever"); ok {
 		t.Error("ParseKind should reject unknown labels")
