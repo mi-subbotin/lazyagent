@@ -898,13 +898,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			// Hook entries are openable directly — newEditorState
-			// switches into entry mode for them. Other StorageEntry
-			// kinds still fall through to `e` for now.
-			if it.Storage == model.StorageEntry && it.Kind != model.KindHook {
-				m.setToast("entries: use 'e' for raw config edit (inline E only for hooks)")
-				return m, nil
-			}
+			// StorageEntry items (Hook / MCP / codex profile) open in
+			// entry mode — buffer is just the JSON value at ConfigKey.
+			// Plain files open as-is.
 			ed, err := newEditorState(it)
 			if err != nil {
 				m.setToast("editor: " + err.Error())

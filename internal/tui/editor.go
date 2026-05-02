@@ -18,11 +18,13 @@ import (
 // dirty tracking, and a conflict flag that triggers the resolution
 // overlay).
 //
-// PRI-61: when the item is a Hook entry the editor opens the inner-hook
-// JSON map only — not the whole settings.json — so users edit just the
-// command/timeout/type/etc fields they care about. Save parses the
-// buffer back to JSON and routes through parse.WriteEntry instead of
-// SaveFile.
+// PRI-61 / PRI-74: when the item is a StorageEntry (Hook, MCP, codex
+// profile, …) the editor opens just the inner JSON value — not the
+// whole settings.json / config.toml — so users edit only the fragment
+// they actually see in the detail panel. Save parses the buffer back
+// to JSON and routes through parse.WriteEntry, which writes the entry
+// back into the underlying file in its native format (TOML for codex
+// configs, JSON for everything else).
 type editorState struct {
 	item    model.Item
 	path    string
@@ -45,13 +47,13 @@ type editorState struct {
 // edit. Returns an error if the file can't be read or stat'd. The
 // caller should call resize once the terminal dimensions are known.
 //
-// For Hook entries the buffer holds the inner-hook map's JSON instead
-// of the full settings.json — fewer characters to skim, no risk of
-// breaking unrelated hooks. Other StorageEntry kinds still fall through
-// to the file-mode editor (via 'e') for now.
+// For StorageEntry items the buffer holds the inner JSON value at
+// ConfigKey instead of the full underlying config — fewer characters
+// to skim, no risk of breaking unrelated entries in the same file,
+// and what the user sees matches the detail panel exactly.
 func newEditorState(it model.Item) (*editorState, error) {
-	if it.Kind == model.KindHook && it.Storage == model.StorageEntry {
-		return newHookEntryEditor(it)
+	if it.Storage == model.StorageEntry {
+		return newEntryEditor(it)
 	}
 	data, err := os.ReadFile(it.Path)
 	if err != nil {
@@ -79,12 +81,16 @@ func newEditorState(it model.Item) (*editorState, error) {
 	}, nil
 }
 
-// newHookEntryEditor opens the editor in entry mode: the buffer is the
-// JSON-encoded inner-hook map at ConfigKey, not the surrounding
-// settings.json. Save will parse the buffer back to JSON and call
+// newEntryEditor opens the editor in entry mode: the buffer is the
+// JSON-encoded inner value at ConfigKey, not the surrounding config
+// file. Save will parse the buffer back to JSON and call
 // parse.WriteEntry; mtime tracking still uses the underlying file so
-// concurrent edits to other hooks in the same file get caught.
-func newHookEntryEditor(it model.Item) (*editorState, error) {
+// concurrent edits to other entries in the same file get caught.
+// Works for any StorageEntry shape — Hooks, MCP servers, codex
+// profiles. The on-disk format (JSON / TOML) is preserved by
+// parse.WriteEntry; the editor surface is JSON regardless so users
+// don't have to remember TOML escaping.
+func newEntryEditor(it model.Item) (*editorState, error) {
 	val, _, err := parse.ReadEntry(it.Path, it.ConfigKey)
 	if err != nil {
 		return nil, err

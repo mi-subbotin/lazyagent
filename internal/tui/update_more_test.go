@@ -580,6 +580,52 @@ func TestEditorEntryModeOnHookSavesViaWriteEntry(t *testing.T) {
 	}
 }
 
+// PRI-74: pressing E on an MCP entry opens the editor in entry mode
+// — buffer is just the inner mcpServers/<name> JSON, not the whole
+// .claude.json. Saving routes through parse.WriteEntry, so unrelated
+// keys survive. Mirrors the hook-entry test above; both paths share
+// newEntryEditor now.
+func TestEditorEntryModeOnMCPSavesViaWriteEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	cfg := dir + "/.claude.json"
+	body := `{"mcpServers":{"linear":{"command":"npx","args":["@linear/mcp"],"env":{},"type":"stdio"}},"otherKey":"keepMe"}`
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := model.Item{
+		Origin: model.OriginClaude, Kind: model.KindMCP, Scope: model.ScopeGlobal,
+		Name: "linear", Path: cfg, Storage: model.StorageEntry,
+		ConfigKey: "mcpServers/linear",
+	}
+	ed, err := newEditorState(it)
+	if err != nil {
+		t.Fatalf("newEditorState: %v", err)
+	}
+	if !ed.entryMode {
+		t.Fatal("MCP editor should run in entryMode")
+	}
+	if !strings.Contains(ed.ta.Value(), "@linear/mcp") {
+		t.Errorf("buffer should hold inner mcp JSON, got %q", ed.ta.Value())
+	}
+	if strings.Contains(ed.ta.Value(), "otherKey") {
+		t.Errorf("buffer must not include unrelated .claude.json keys, got %q", ed.ta.Value())
+	}
+	edited := strings.Replace(ed.ta.Value(), "@linear/mcp", "@linear/mcp@1.2.3", 1)
+	ed.ta.SetValue(edited)
+	if err := ed.saveEntry(); err != nil {
+		t.Fatalf("saveEntry: %v", err)
+	}
+	got, _ := os.ReadFile(cfg)
+	s := string(got)
+	if !strings.Contains(s, "@linear/mcp@1.2.3") {
+		t.Errorf("config missing edit:\n%s", s)
+	}
+	if !strings.Contains(s, "otherKey") {
+		t.Errorf("unrelated keys clobbered:\n%s", s)
+	}
+}
+
 // PRI-64: pressing S opens the sync overlay populated from SyncAll.
 // The fixture has at least one shareable global item, so the plan is
 // non-empty and the overlay surfaces it.
