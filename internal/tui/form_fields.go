@@ -18,6 +18,22 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// inputBoxStyle wraps text inputs / textareas in a thin rounded
+// border so users can tell what's a label and what's an editable
+// field at a glance. The focused variant uses the bright blue from
+// the rest of the TUI's focus styling.
+var (
+	inputBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#414868")).
+			Padding(0, 1)
+
+	inputBoxFocusedStyle = inputBoxStyle.
+				BorderForeground(lipgloss.Color("#7aa2f7"))
 )
 
 // buildFields constructs the live []formField for a schema.
@@ -79,16 +95,70 @@ func newInput(spec fieldSpec, value string) textinput.Model {
 	ti.Placeholder = spec.Label
 	ti.CharLimit = 256
 	ti.Width = 50
+	// Drop the default "> " prompt — the bordered box already
+	// signals "input here", and the leading "> " was confusing for
+	// users who read it as part of the value.
+	ti.Prompt = ""
 	return ti
 }
 
 func newTextarea(value string) textarea.Model {
 	ta := textarea.New()
 	ta.SetValue(value)
-	ta.SetHeight(6)
+	// Tighter default — most arg/env lists are short. textarea
+	// auto-grows when the user keeps typing.
+	ta.SetHeight(3)
 	ta.SetWidth(50)
 	ta.ShowLineNumbers = false
+	// Drop the default ThickBorder.Left+" " prompt — it rendered as
+	// a confusing "│" column on every empty line that users read as
+	// "empty input slots".
+	ta.Prompt = "  "
+	ta.Placeholder = ""
+	ta.CharLimit = 0
 	return ta
+}
+
+// focus picks the right widget based on the field's Kind and the
+// form's current listMode and calls Focus on it. Critical: we
+// must not call Focus on a zero-value bubbles widget — its cursor
+// is uninitialized and BlinkCmd dereferences a nil channel
+// (PRI-77 panic). Returns the tea.Cmd from the underlying Focus
+// so the caller can run the blink command.
+func (fld *formField) focus(listMode string) tea.Cmd {
+	switch fld.spec.Kind {
+	case fieldStringList, fieldStringMap:
+		if listMode == "fields" {
+			if len(fld.rowsValues) > 0 {
+				return fld.rowsValues[0].Focus()
+			}
+			if len(fld.rowsKeys) > 0 {
+				return fld.rowsKeys[0].Focus()
+			}
+			return nil
+		}
+		return fld.textarea.Focus()
+	}
+	return fld.input.Focus()
+}
+
+// blur is the symmetric helper for focus.
+func (fld *formField) blur(listMode string) {
+	switch fld.spec.Kind {
+	case fieldStringList, fieldStringMap:
+		if listMode == "fields" {
+			for i := range fld.rowsValues {
+				fld.rowsValues[i].Blur()
+			}
+			for i := range fld.rowsKeys {
+				fld.rowsKeys[i].Blur()
+			}
+			return
+		}
+		fld.textarea.Blur()
+		return
+	}
+	fld.input.Blur()
 }
 
 func newRowInputs(values []string) []textinput.Model {
@@ -98,39 +168,62 @@ func newRowInputs(values []string) []textinput.Model {
 		ti.SetValue(v)
 		ti.CharLimit = 256
 		ti.Width = 40
+		ti.Prompt = ""
 		out[i] = ti
 	}
 	return out
 }
 
-// renderField formats one field as text. focused shows a "▸ " cursor
-// prefix; unfocused fields just align with two spaces.
+// renderField formats one field with a label line, a bordered widget
+// underneath, optional inline help, and warnings. The focused field
+// gets a brighter border and a "▸" prefix on the label so the eye
+// finds it immediately. Empty list/map fields show a placeholder
+// hint so users know they can type into the box.
 func renderField(fld formField, focused bool, listMode string) string {
-	prefix := "  "
-	if focused {
-		prefix = titleStyle.Render("▸ ")
-	}
 	var b strings.Builder
-	label := fld.spec.Label
+
+	// Label row: marker · field name · required asterisk.
+	marker := "  "
+	labelStyle := dimStyle
+	if focused {
+		marker = titleStyle.Render("▸ ")
+		labelStyle = titleStyle
+	}
+	label := labelStyle.Render(fld.spec.Label)
 	if fld.spec.Required {
 		label += dimStyle.Render(" *")
 	}
-	b.WriteString(prefix + label + "\n")
+	b.WriteString(marker + label + "\n")
+
+	// Widget row: a bordered box (focused = bright). For lists/maps
+	// the box wraps either the textarea (lines mode) or the rows
+	// (fields mode). Indent the whole thing by 4 so it visually
+	// hangs off the label.
+	box := inputBoxStyle
+	if focused {
+		box = inputBoxFocusedStyle
+	}
+	var content string
 	switch fld.spec.Kind {
 	case fieldString, fieldInt:
-		b.WriteString("    " + fld.input.View())
+		content = fld.input.View()
 	case fieldEnum:
-		b.WriteString("    " + renderEnum(fld))
+		content = renderEnum(fld)
 	case fieldStringList:
-		b.WriteString(renderStringList(fld, listMode))
+		content = renderStringList(fld, listMode)
 	case fieldStringMap:
-		b.WriteString(renderStringMap(fld, listMode))
+		content = renderStringMap(fld, listMode)
 	}
-	if focused && fld.spec.Help != "" {
-		b.WriteString("\n    " + dimStyle.Render(fld.spec.Help))
+	b.WriteString(indent(box.Render(content), "    ") + "\n")
+
+	// Inline help: shown for all fields, not just the focused one.
+	// Users complained the form felt opaque ("не пойму куда вводить")
+	// — surfacing the hint everywhere lowers the barrier.
+	if fld.spec.Help != "" {
+		b.WriteString("    " + dimStyle.Render(fld.spec.Help) + "\n")
 	}
 	if fld.warning != "" {
-		b.WriteString("\n    " + dimStyle.Render("⚠ "+fld.warning))
+		b.WriteString("    " + warnStyle.Render("⚠ "+fld.warning) + "\n")
 	}
 	return b.String()
 }
@@ -149,27 +242,38 @@ func renderEnum(fld formField) string {
 
 func renderStringList(fld formField, listMode string) string {
 	if listMode == "fields" {
+		if len(fld.rowsValues) == 0 {
+			return dimStyle.Render("(empty — ctrl+m switches to lines mode)")
+		}
 		var b strings.Builder
 		for i, ti := range fld.rowsValues {
-			fmt.Fprintf(&b, "    %2d  %s\n", i+1, ti.View())
+			fmt.Fprintf(&b, "%2d  %s\n", i+1, ti.View())
 		}
-		b.WriteString("    " + dimStyle.Render("[+ enter to add a row]"))
-		return b.String()
+		return strings.TrimRight(b.String(), "\n")
 	}
-	return "    " + indent(fld.textarea.View(), "    ")
+	view := fld.textarea.View()
+	if strings.TrimSpace(fld.textarea.Value()) == "" {
+		view += "\n" + dimStyle.Render("(type one item per line)")
+	}
+	return view
 }
 
 func renderStringMap(fld formField, listMode string) string {
 	if listMode == "fields" {
+		if len(fld.rowsKeys) == 0 {
+			return dimStyle.Render("(empty — ctrl+m switches to lines mode)")
+		}
 		var b strings.Builder
 		for i := range fld.rowsKeys {
-			fmt.Fprintf(&b, "    %s = %s\n", fld.rowsKeys[i].View(), fld.rowsValues[i].View())
+			fmt.Fprintf(&b, "%s = %s\n", fld.rowsKeys[i].View(), fld.rowsValues[i].View())
 		}
-		b.WriteString("    " + dimStyle.Render("[+ enter to add a row]"))
-		return b.String()
+		return strings.TrimRight(b.String(), "\n")
 	}
-	return "    " + dimStyle.Render("KEY=VALUE per line:") + "\n" +
-		indent(fld.textarea.View(), "    ")
+	view := fld.textarea.View()
+	if strings.TrimSpace(fld.textarea.Value()) == "" {
+		view += "\n" + dimStyle.Render("(KEY=VALUE per line)")
+	}
+	return view
 }
 
 func indent(s, prefix string) string {

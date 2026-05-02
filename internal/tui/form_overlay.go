@@ -166,8 +166,8 @@ func newFormOverlay(it model.Item) (*formOverlay, bool) {
 	f.recomputeVisibility()
 	f.validateAll()
 	if len(f.fields) > 0 {
-		f.fields[f.firstVisible()].input.Focus()
 		f.focused = f.firstVisible()
+		f.fields[f.focused].focus(f.listMode)
 	}
 	return f, true
 }
@@ -313,10 +313,11 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		f.listMode = next
 		f.fields = buildFields(f.schema, f.collectValues(), next)
 		f.recomputeVisibility()
+		f.validateAll()
 		if f.focused >= len(f.fields) {
 			f.focused = f.firstVisible()
 		}
-		f.fields[f.focused].input.Focus()
+		f.fields[f.focused].focus(f.listMode)
 		return m, nil
 	case "tab":
 		f.advanceFocus(+1)
@@ -330,12 +331,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // advanceFocus moves the focus ring across visible fields, wrapping.
-// Blurs the previous and focuses the next.
+// Uses the formField focus/blur helpers so we never call Focus on a
+// zero-value bubbles widget (which crashes via the cursor blink path).
 func (f *formOverlay) advanceFocus(dir int) {
 	if len(f.fields) == 0 {
 		return
 	}
-	f.fields[f.focused].input.Blur()
+	f.fields[f.focused].blur(f.listMode)
 	for step := 0; step < len(f.fields); step++ {
 		f.focused = (f.focused + dir + len(f.fields)) % len(f.fields)
 		if f.fields[f.focused].visible {
@@ -343,8 +345,7 @@ func (f *formOverlay) advanceFocus(dir int) {
 		}
 	}
 	f.rowFocus = 0
-	f.fields[f.focused].input.Focus()
-	f.fields[f.focused].textarea.Focus()
+	f.fields[f.focused].focus(f.listMode)
 }
 
 // validateAll runs each visible field's Validate against the

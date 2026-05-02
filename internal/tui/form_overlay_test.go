@@ -242,6 +242,37 @@ func TestValidateAllSurfacesURLWarning(t *testing.T) {
 	}
 }
 
+// PRI-77: advanceFocus called textarea.Focus() unconditionally, but
+// textarea is a zero-value struct on non-list fields and its inner
+// cursor.Model has nil channels — BlinkCmd dereferenced them and
+// crashed. The focus() helper now picks the right widget; this test
+// guards the regression by tab-cycling through a stdio MCP form,
+// which has both string and stringList fields.
+func TestFormAdvanceFocusDoesNotPanic(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	cfg := dir + "/.claude.json"
+	writeJSON(t, cfg, `{"mcpServers":{"linear":{"command":"npx","args":["@linear/mcp"],"env":{"FOO":"1"},"type":"stdio"}}}`)
+	it := model.Item{
+		Origin: model.OriginClaude, Kind: model.KindMCP, Scope: model.ScopeGlobal,
+		Name: "linear", Path: cfg, Storage: model.StorageEntry,
+		ConfigKey: "mcpServers/linear",
+	}
+	f, ok := newFormOverlay(it)
+	if !ok {
+		t.Fatal("form expected")
+	}
+	// Tab through every field forward, then back; if either calls
+	// Focus on a zero-value bubbles widget, the cursor blink path
+	// will panic.
+	for i := 0; i < len(f.fields)*2; i++ {
+		f.advanceFocus(+1)
+	}
+	for i := 0; i < len(f.fields)*2; i++ {
+		f.advanceFocus(-1)
+	}
+}
+
 func TestMCPSchemaShapeMatches(t *testing.T) {
 	sch := mcpSchema()
 	if !sch.shapeMatches(map[string]any{"command": "npx", "type": "stdio"}) {
