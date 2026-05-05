@@ -229,6 +229,12 @@ type Model struct {
 	// occupied.
 	restoreOverlay *restoreOverlay
 
+	// doctorOverlay drives the `!` doctor recommendations overlay
+	// (PRI-97). Reads the latest run from `lazyagent doctor` off disk;
+	// checked rows route to actions.Place / actions.Delete and rely on
+	// PRI-92 auto-snapshots for undo.
+	doctorOverlay *doctorOverlay
+
 	// PRI-19: update banner. updateAvailable carries the version the
 	// background goroutine fetched from GitHub when it is strictly
 	// newer than the running build; updateURL is the release page;
@@ -681,6 +687,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateRestoreOverlay(msg)
 		}
 
+		// Doctor overlay (`!`): apply LLM recommendations. PRI-97.
+		if m.doctorOverlay != nil {
+			return m.updateDoctorOverlay(msg)
+		}
+
 		// Sync-all overlay (`S`): full plan preview + apply. PRI-64.
 		if m.syncing != nil {
 			return m.updateSyncOverlay(msg)
@@ -855,6 +866,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// per-snapshot restore. Read-only until `r` / `R` inside
 			// the detail view.
 			m.restoreOverlay = newRestoreOverlay()
+			return m, nil
+		case "!":
+			// PRI-97: doctor recommendations overlay. Reads the latest
+			// `lazyagent doctor` run from disk; checked rows apply via
+			// actions.Place / actions.Delete (auto-snapshotted).
+			m.doctorOverlay = newDoctorOverlay(m.items)
 			return m, nil
 		case "S":
 			// Bulk sync: project every shareable global item to every
@@ -2067,6 +2084,7 @@ func helpText() string {
 		"  b        context budget — passive token cost of installed items\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
 		"  Z        undo / restore from snapshots\n" +
+		"  !        doctor recommendations — apply checked rows (Place / Delete)\n" +
 		"  A        toggle all-local mode (fold every discovered project's items)\n" +
 		"  B        toggle Mode B (per-project subgroups under Local; needs A)\n" +
 		"  r        reload all sources\n" +
@@ -2338,6 +2356,9 @@ func (m Model) View() string {
 	} else if m.restoreOverlay != nil {
 		body = overlay(body, restoreOverlayText(*m.restoreOverlay),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.doctorOverlay != nil {
+		body = overlay(body, doctorOverlayText(*m.doctorOverlay),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
 	switch {
@@ -2373,6 +2394,15 @@ func (m Model) View() string {
 		statusLine = " form · ctrl+s save · tab next · ctrl+m toggle list mode · esc cancel "
 	case m.resyncPicker != nil:
 		statusLine = " c canonical wins · t tool wins · esc cancel "
+	case m.doctorOverlay != nil:
+		switch m.doctorOverlay.phase {
+		case doctorPhaseConfirm:
+			statusLine = " doctor · y confirm · n/esc back "
+		case doctorPhaseDone:
+			statusLine = " doctor · esc/enter close "
+		default:
+			statusLine = " doctor · space toggle · a all · y apply · esc close "
+		}
 	default:
 		statusLine = m.defaultStatusLine()
 	}
