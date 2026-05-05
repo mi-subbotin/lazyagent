@@ -217,6 +217,12 @@ type Model struct {
 	// toggles list/map presentation (lines vs fields), ctrl+s saves.
 	forming *formOverlay
 
+	// restoreOverlay drives the `Z` undo / restore overlay over
+	// internal/backup snapshots (PRI-93). List view → detail view →
+	// per-item restore with confirm-overwrite when the target path is
+	// occupied.
+	restoreOverlay *restoreOverlay
+
 	// PRI-19: update banner. updateAvailable carries the version the
 	// background goroutine fetched from GitHub when it is strictly
 	// newer than the running build; updateURL is the release page;
@@ -635,6 +641,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePlacePicker(msg)
 		}
 
+		// Restore overlay (`Z`): browse and restore backup snapshots
+		// from internal/backup. PRI-93.
+		if m.restoreOverlay != nil {
+			return m.updateRestoreOverlay(msg)
+		}
+
 		// Sync-all overlay (`S`): full plan preview + apply. PRI-64.
 		if m.syncing != nil {
 			return m.updateSyncOverlay(msg)
@@ -802,6 +814,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.placePicker = p
+			return m, nil
+		case "Z":
+			// PRI-93: undo / restore overlay. Lists snapshots written
+			// by internal/backup before destructive ops; per-item or
+			// per-snapshot restore. Read-only until `r` / `R` inside
+			// the detail view.
+			m.restoreOverlay = newRestoreOverlay()
 			return m, nil
 		case "S":
 			// Bulk sync: project every shareable global item to every
@@ -1995,6 +2014,7 @@ func helpText() string {
 		"  u        usage / cost summary across loaded sessions\n" +
 		"  b        context budget — passive token cost of installed items\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
+		"  Z        undo / restore from snapshots\n" +
 		"  A        toggle all-local mode (fold every discovered project's items)\n" +
 		"  B        toggle Mode B (per-project subgroups under Local; needs A)\n" +
 		"  r        reload all sources\n" +
@@ -2257,6 +2277,9 @@ func (m Model) View() string {
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	} else if m.forming != nil {
 		body = overlay(body, formView(m.forming),
+			innerW+gap+panelBorderW*2, contentH+panelBorderH)
+	} else if m.restoreOverlay != nil {
+		body = overlay(body, restoreOverlayText(*m.restoreOverlay),
 			innerW+gap+panelBorderW*2, contentH+panelBorderH)
 	}
 	var statusLine string
