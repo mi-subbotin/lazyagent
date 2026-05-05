@@ -207,6 +207,7 @@ func main() {
 
 	m := tui.New(srcs, projectDir)
 	m.SetInstallSource(detectInstallSource())
+	m.SetUnusedDays(cfg.Usage.UnusedDays)
 
 	// PRI-4: bootstrap the global project index. We honour the disk
 	// cache when it is fresh enough (<24h) so first-paint stays fast.

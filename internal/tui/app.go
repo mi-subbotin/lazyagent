@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"github.com/mi-subbotin/lazyagent/internal/sources"
 	"github.com/mi-subbotin/lazyagent/internal/state"
 	"github.com/mi-subbotin/lazyagent/internal/store"
+	"github.com/mi-subbotin/lazyagent/internal/usage"
 )
 
 type focus int
@@ -252,6 +254,11 @@ type Model struct {
 	discoveredProjects []string
 	allLocal           bool
 	allLocalModeB      bool
+
+	// PRI-95: usage badge threshold. An item is rendered with
+	// "(unused Nd)" when its LastSeen is older than this many days.
+	// Zero or negative disables the badge entirely.
+	unusedDays int
 }
 
 func New(srcs []sources.Source, projectDir string) Model {
@@ -267,6 +274,10 @@ func New(srcs []sources.Source, projectDir string) Model {
 		showAgentSessions:   st.ShowAgentSessions,
 	}
 }
+
+// SetUnusedDays plumbs the configured "(unused Nd)" threshold from
+// main.go into the renderer. A non-positive value disables the badge.
+func (m *Model) SetUnusedDays(days int) { m.unusedDays = days }
 
 // SetInstallSource records how the binary was installed ("brew",
 // "go-install", "unknown"). main.go calls this once before tea.Run so
@@ -479,6 +490,11 @@ func (m Model) loadCmd() tea.Cmd {
 			if k, ok := dupIndex[itemDupKey(all[i])]; ok {
 				all[i].DupGroup = k
 			}
+		}
+		// PRI-95: stamp Item.LastSeen from session-log scan. Errors are
+		// logged but never block the load.
+		if err := usage.LoadLastSeen(all); err != nil {
+			slog.Warn("usage: load last-seen", "err", err)
 		}
 		return itemsLoadedMsg{items: all}
 	}
@@ -2519,6 +2535,15 @@ func (m Model) renderTree(w, h int) string {
 				if it.Meta["cwdGone"] == "1" {
 					label += " (cwd gone)"
 					cwdGone = true
+				}
+				// PRI-95: "(unused Nd)" — item's name was last seen
+				// in a session log more than UnusedDays ago.
+				if m.unusedDays > 0 && !it.LastSeen.IsZero() {
+					threshold := time.Duration(m.unusedDays) * 24 * time.Hour
+					if elapsed := time.Since(it.LastSeen); elapsed > threshold {
+						days := int(elapsed / (24 * time.Hour))
+						label += fmt.Sprintf(" (unused %dd)", days)
+					}
 				}
 			}
 			raw = indent + "  " + label

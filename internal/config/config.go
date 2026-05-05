@@ -27,6 +27,7 @@ type Config struct {
 	Updates UpdatesConfig `toml:"updates"`
 	Logging LoggingConfig `toml:"logging"`
 	Backup  BackupConfig  `toml:"backup"`
+	Usage   UsageConfig   `toml:"usage"`
 }
 
 // SearchConfig — global indexer roots and exclusions (PRI-4 / PRI-10).
@@ -78,6 +79,14 @@ type BackupConfig struct {
 	KeepLast int `toml:"keep_last"`
 }
 
+// UsageConfig — session-log scan thresholds (PRI-95). UnusedDays is
+// the cutoff for the "(unused Nd)" badge: an item is flagged when its
+// LastSeen is older than this many days. Zero or negative disables the
+// badge.
+type UsageConfig struct {
+	UnusedDays int `toml:"unused_days"`
+}
+
 // Default returns a fully-populated Config with the baked-in defaults.
 // Modifying the returned value is safe — every call yields a fresh struct.
 func Default() *Config {
@@ -114,6 +123,9 @@ func Default() *Config {
 		},
 		Backup: BackupConfig{
 			KeepLast: 50,
+		},
+		Usage: UsageConfig{
+			UnusedDays: 30,
 		},
 	}
 }

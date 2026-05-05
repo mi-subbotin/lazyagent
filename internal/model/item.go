@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type Origin int
 
 const (
@@ -222,6 +224,12 @@ type Item struct {
 	// subgroup that's collapsed by default so they don't dominate the
 	// listing. Currently only KindSession sets this.
 	Private bool
+
+	// LastSeen is the most recent time the item's Name was mentioned in
+	// any scanned session log. Zero means unknown / never seen / not
+	// scanned. Populated by internal/usage.LoadLastSeen and consumed by
+	// the TUI to render an "(unused Nd)" badge. Not persisted.
+	LastSeen time.Time
 
 	// Agent flags KindSession items that were spawned by a Task-tool
 	// invocation (Claude subagent / sidechain). They live alongside
