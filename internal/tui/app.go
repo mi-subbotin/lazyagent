@@ -265,7 +265,21 @@ type Model struct {
 	// "(unused Nd)" when its LastSeen is older than this many days.
 	// Zero or negative disables the badge entirely.
 	unusedDays int
+
+	// PRI-66: cached per-item token estimates keyed by Item.Path so the
+	// renderer doesn't re-tokenise on every redraw. Filled lazily on
+	// first row paint; wiped on `r` reload alongside glamourCache.
+	budgetCache map[string]int
 }
+
+// budget thresholds for the inline tree badge — tuned for the current
+// 200k-token Claude window. Above warn the badge turns yellow; above
+// critical it turns red. Items below warn render in the same dim grey
+// as the rest of the secondary text.
+const (
+	budgetWarnTokens     = 10_000
+	budgetCriticalTokens = 25_000
+)
 
 func New(srcs []sources.Source, projectDir string) Model {
 	st, _ := state.Load()
@@ -276,6 +290,7 @@ func New(srcs []sources.Source, projectDir string) Model {
 		loading:             true,
 		glamourCache:        map[string][]string{},
 		sessionBodyCache:    map[string]string{},
+		budgetCache:         map[string]int{},
 		hidePrivateSessions: st.HidePrivateSessions,
 		showAgentSessions:   st.ShowAgentSessions,
 	}
@@ -770,6 +785,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for k := range m.sessionBodyCache {
 				delete(m.sessionBodyCache, k)
 			}
+			for k := range m.budgetCache {
+				delete(m.budgetCache, k)
+			}
+			budget.ResetEstimateCache()
 			return m, m.loadCmd()
 		case "A":
 			// PRI-4: toggle "all local" projects mode. When on, items
@@ -1395,6 +1414,52 @@ func formatActionError(op pendingOp, err error) string {
 		return op.verb() + ": target already exists"
 	default:
 		return op.verb() + ": " + err.Error()
+	}
+}
+
+// itemTokenEstimate returns a cached token estimate for it. Only the
+// passive-context kinds (Skill / Agent / Memory / Prompt) are
+// estimated; entries (MCP / Hook) and Sessions are skipped because
+// either they're tiny in practice (entries) or their cost is already
+// surfaced via the usage view (sessions). Returns -1 when the kind is
+// skipped or the file couldn't be read.
+func (m *Model) itemTokenEstimate(it model.Item) int {
+	switch it.Kind {
+	case model.KindSkill, model.KindAgent, model.KindMemory, model.KindPrompt:
+	default:
+		return -1
+	}
+	if it.Path == "" {
+		return -1
+	}
+	if v, ok := m.budgetCache[it.Path]; ok {
+		return v
+	}
+	n, ok := budget.EstimateItem(it)
+	if !ok {
+		m.budgetCache[it.Path] = -1
+		return -1
+	}
+	m.budgetCache[it.Path] = n
+	return n
+}
+
+// renderTokenBadge returns the styled "~Nk" suffix to append to a tree
+// row. Empty string when n is -1 (skipped or unmeasured) or below ~500
+// tokens (noise floor — the badge would clutter the tree without
+// telling the user anything actionable).
+func renderTokenBadge(n int) string {
+	if n < 500 {
+		return ""
+	}
+	label := "~" + budget.FormatTokens(n)
+	switch {
+	case n >= budgetCriticalTokens:
+		return budgetCriticalStyle.Render(label)
+	case n >= budgetWarnTokens:
+		return budgetHeavyStyle.Render(label)
+	default:
+		return budgetDimStyle.Render(label)
 	}
 }
 
@@ -2082,6 +2147,7 @@ func helpText() string {
 		"  i        install from a github.com / gist URL\n" +
 		"  u        usage / cost summary across loaded sessions\n" +
 		"  b        context budget — passive token cost of installed items\n" +
+		"           tree rows show ~Nk badge: yellow ≥10k, red ≥25k\n" +
 		"  U        update an installed item to the origin's latest sha\n" +
 		"  Z        undo / restore from snapshots\n" +
 		"  !        doctor recommendations — apply checked rows (Place / Delete)\n" +
@@ -2576,8 +2642,33 @@ func (m Model) renderTree(w, h int) string {
 					}
 				}
 			}
-			raw = indent + "  " + label
-			raw = truncRunes(raw, contentW)
+			// PRI-66: passive-context cost badge. Computed lazily and
+			// only surfaced when the row has space — otherwise truncate
+			// would chop the badge and leave the user with "~5".
+			var badgeRaw, badgeStyled string
+			if n.itemIdx >= 0 && n.itemIdx < len(m.items) {
+				if est := m.itemTokenEstimate(m.items[n.itemIdx]); est > 0 {
+					if styled := renderTokenBadge(est); styled != "" {
+						badgeRaw = "~" + budget.FormatTokens(est)
+						badgeStyled = styled
+					}
+				}
+			}
+			labelRow := indent + "  " + label
+			labelMax := contentW
+			if badgeRaw != "" {
+				if w := runewidth.StringWidth(labelRow) + 1 + runewidth.StringWidth(badgeRaw); w > contentW {
+					// Not enough room — drop the badge rather than
+					// truncating it.
+					badgeRaw, badgeStyled = "", ""
+				} else {
+					labelMax = contentW - 1 - runewidth.StringWidth(badgeRaw)
+				}
+			}
+			raw = truncRunes(labelRow, labelMax)
+			if badgeRaw != "" {
+				raw = raw + " " + badgeRaw
+			}
 			styled = raw
 			switch {
 			case invalid:
@@ -2590,6 +2681,15 @@ func (m Model) renderTree(w, h int) string {
 				// Dim — same treatment as empty-group placeholders.
 				// Lower weight than (drift) since this isn't user-fixable.
 				styled = dimStyle.Render(raw)
+			default:
+				// PRI-66: re-paint just the badge tail in the budget
+				// colour. Skipped when a state-style above already
+				// recoloured the whole row — the row colour wins so the
+				// row's primary signal (drift / invalid / warn) isn't
+				// muddied by the cost badge.
+				if badgeStyled != "" && strings.HasSuffix(raw, " "+badgeRaw) {
+					styled = strings.TrimSuffix(raw, badgeRaw) + badgeStyled
+				}
 			}
 		}
 		if i == m.cursor && m.focus == focusTree {

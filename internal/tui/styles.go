@@ -46,4 +46,20 @@ var (
 	// the item still works — just isn't quite right.
 	warnStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#e0af68"))
+
+	// budgetHeavyStyle paints the "~Nk" token-cost badge yellow when an
+	// item's estimated passive context cost exceeds budgetWarnTokens.
+	budgetHeavyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#e0af68"))
+
+	// budgetCriticalStyle paints the badge red past budgetCriticalTokens.
+	// At this size a single item is eating measurable percent of the
+	// model's context window every turn.
+	budgetCriticalStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#f7768e"))
+
+	// budgetDimStyle is the default badge tint — same dim grey as the
+	// rest of secondary text, so small items don't shout for attention.
+	budgetDimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#565f89"))
 )
