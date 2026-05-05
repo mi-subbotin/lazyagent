@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mi-subbotin/lazyagent/internal/backup"
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/store"
@@ -100,6 +101,15 @@ func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
 		source = filepath.Join(canonical, bodyName)
 	}
 
+	if len(conflicts) > 0 {
+		snapItems := make([]model.Item, 0, len(conflicts))
+		for _, c := range conflicts {
+			snapItems = append(snapItems, conflictSnapshotItem(it, c))
+		}
+		if _, err := backup.Create("place-overwrite", snapItems); err != nil {
+			return fmt.Errorf("snapshot conflicts: %w", err)
+		}
+	}
 	for _, c := range conflicts {
 		if err := os.RemoveAll(c.Path); err != nil {
 			return fmt.Errorf("clean conflict at %s: %w", c.Path, err)
@@ -137,7 +147,11 @@ func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
 		}
 	}
 
-	return writePlaceManifest(it, canonical, targets)
+	if err := writePlaceManifest(it, canonical, targets); err != nil {
+		return err
+	}
+	_ = backup.Prune(backup.LoadKeepLast())
+	return nil
 }
 
 // PlaceConflicts pre-flights what Place would replace if called now.
@@ -800,6 +814,35 @@ func isMissingKey(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "not found")
+}
+
+// conflictSnapshotItem builds a model.Item describing a conflict path
+// good enough for backup.Create to capture before removal. Storage is
+// inferred via lstat: a directory becomes StorageDir (with Path set to
+// a sentinel inside the dir so filepath.Dir(Path) recovers the dir),
+// anything else becomes StorageFile. The originating item provides
+// Kind/Name; the conflict supplies Origin and the on-disk Path. Scope
+// is left at the source's value — we don't have a guaranteed mapping
+// from conflict path back to a specific scope, but the snapshot stores
+// the original Path, which is what Restore needs.
+func conflictSnapshotItem(src model.Item, c ShareConflict) model.Item {
+	storage := model.StorageFile
+	path := c.Path
+	if info, err := os.Lstat(c.Path); err == nil && info.IsDir() {
+		storage = model.StorageDir
+		// StorageDir items have it.Path point at the body file inside
+		// the dir; filepath.Dir recovers the directory. Use a fake
+		// SKILL.md leaf so capture and restore both target the dir.
+		path = filepath.Join(c.Path, "SKILL.md")
+	}
+	return model.Item{
+		Origin:  c.Target,
+		Kind:    src.Kind,
+		Scope:   src.Scope,
+		Name:    src.Name,
+		Path:    path,
+		Storage: storage,
+	}
 }
 
 // uniqTargets removes duplicate (Origin, Scope) pairs while preserving

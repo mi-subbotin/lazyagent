@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mi-subbotin/lazyagent/internal/backup"
 	"github.com/mi-subbotin/lazyagent/internal/model"
 )
 
@@ -49,16 +50,25 @@ func Delete(it model.Item) error {
 	if it.Kind == model.KindSession {
 		return DeleteSession(it)
 	}
+	if _, err := backup.Create("delete", []model.Item{it}); err != nil {
+		return err
+	}
+	var actErr error
 	switch it.Storage {
 	case model.StorageFile:
-		return os.Remove(it.Path)
+		actErr = os.Remove(it.Path)
 	case model.StorageDir:
-		return os.RemoveAll(filepath.Dir(it.Path))
+		actErr = os.RemoveAll(filepath.Dir(it.Path))
 	case model.StorageEntry:
-		return deleteEntry(it)
+		actErr = deleteEntry(it)
 	default:
 		return ErrUnsupported
 	}
+	if actErr != nil {
+		return actErr
+	}
+	_ = backup.Prune(backup.LoadKeepLast())
+	return nil
 }
 
 func copyFile(src, dst string) error {

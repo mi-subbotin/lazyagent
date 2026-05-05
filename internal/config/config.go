@@ -26,6 +26,7 @@ type Config struct {
 	Install InstallConfig `toml:"install"`
 	Updates UpdatesConfig `toml:"updates"`
 	Logging LoggingConfig `toml:"logging"`
+	Backup  BackupConfig  `toml:"backup"`
 }
 
 // SearchConfig — global indexer roots and exclusions (PRI-4 / PRI-10).
@@ -70,6 +71,13 @@ type LoggingConfig struct {
 	Format string `toml:"format"`
 }
 
+// BackupConfig — automatic snapshot retention (PRI-92). KeepLast caps
+// how many snapshots Prune leaves on disk after a destructive action;
+// values <= 0 disable pruning.
+type BackupConfig struct {
+	KeepLast int `toml:"keep_last"`
+}
+
 // Default returns a fully-populated Config with the baked-in defaults.
 // Modifying the returned value is safe — every call yields a fresh struct.
 func Default() *Config {
@@ -103,6 +111,9 @@ func Default() *Config {
 			Level:  "warn",
 			File:   "~/.lazyagent/logs/lazyagent.log",
 			Format: "text",
+		},
+		Backup: BackupConfig{
+			KeepLast: 50,
 		},
 	}
 }

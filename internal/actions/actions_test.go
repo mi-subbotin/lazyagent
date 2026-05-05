@@ -11,6 +11,7 @@ import (
 )
 
 func TestDelete_StorageFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.md")
 	if err := os.WriteFile(path, []byte("body"), 0o644); err != nil {
@@ -26,6 +27,7 @@ func TestDelete_StorageFile(t *testing.T) {
 }
 
 func TestDelete_StorageDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skill")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -44,6 +46,7 @@ func TestDelete_StorageDir(t *testing.T) {
 }
 
 func TestDelete_StorageEntry_Hook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "settings.json")
 	body := `{

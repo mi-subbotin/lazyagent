@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mi-subbotin/lazyagent/internal/backup"
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/store"
 )
@@ -57,13 +58,20 @@ func Resync(it model.Item, dir ResyncDirection) error {
 	}
 	canonicalBody := filepath.Join(canonical, bodyName)
 
+	var err error
 	switch dir {
 	case ResyncCanonicalWins:
-		return resyncCanonicalWins(it, canonical, canonicalBody)
+		err = resyncCanonicalWins(it, canonical, canonicalBody)
 	case ResyncToolWins:
-		return resyncToolWins(it, canonical, canonicalBody)
+		err = resyncToolWins(it, canonical, canonicalBody)
+	default:
+		return fmt.Errorf("unknown resync direction %d", dir)
 	}
-	return fmt.Errorf("unknown resync direction %d", dir)
+	if err != nil {
+		return err
+	}
+	_ = backup.Prune(backup.LoadKeepLast())
+	return nil
 }
 
 // canonicalForItem locates the store directory backing it, trying
@@ -102,6 +110,12 @@ func resyncCanonicalWins(it model.Item, canonical, canonicalBody string) error {
 	if it.Storage != model.StorageDir {
 		source = canonicalBody
 	}
+
+	type drifted struct {
+		origin model.Origin
+		path   string
+	}
+	var drifts []drifted
 	for _, t := range []model.Origin{model.OriginClaude, model.OriginCodex, model.OriginGemini} {
 		if isLossyProjection(it.Kind, t) {
 			pt := ProjectionTarget{Origin: t, Scope: model.ScopeGlobal}
@@ -125,18 +139,27 @@ func resyncCanonicalWins(it model.Item, canonical, canonicalBody string) error {
 		if err != nil {
 			continue
 		}
-		// Healthy symlink to the canonical we own → nothing to do.
-		// Compare via CanonicalItemDir so /var/X and /private/var/X
-		// (the macOS symlink pair) collapse to the same resolved form.
 		if info.Mode()&os.ModeSymlink != 0 && store.CanonicalItemDir(target) == canonical {
 			continue
 		}
-		if err := os.RemoveAll(target); err != nil {
-			return fmt.Errorf("clean drifted %s: %w", target, err)
+		drifts = append(drifts, drifted{origin: t, path: target})
+	}
+	if len(drifts) > 0 {
+		snapItems := make([]model.Item, 0, len(drifts))
+		for _, d := range drifts {
+			snapItems = append(snapItems, conflictSnapshotItem(it, ShareConflict{Target: d.origin, Path: d.path}))
 		}
-		mode := store.PickLinkMode(target)
-		if err := store.EnsureLink(source, target, mode); err != nil {
-			return fmt.Errorf("reproject to %s: %w", t, err)
+		if _, err := backup.Create("resync-canonical", snapItems); err != nil {
+			return fmt.Errorf("snapshot resync targets: %w", err)
+		}
+	}
+	for _, d := range drifts {
+		if err := os.RemoveAll(d.path); err != nil {
+			return fmt.Errorf("clean drifted %s: %w", d.path, err)
+		}
+		mode := store.PickLinkMode(d.path)
+		if err := store.EnsureLink(source, d.path, mode); err != nil {
+			return fmt.Errorf("reproject to %s: %w", d.origin, err)
 		}
 	}
 	return nil
@@ -155,6 +178,15 @@ func resyncToolWins(it model.Item, canonical, canonicalBody string) error {
 	data, err := os.ReadFile(it.Path)
 	if err != nil {
 		return fmt.Errorf("read tool body %s: %w", it.Path, err)
+	}
+	if _, err := os.Stat(canonicalBody); err == nil {
+		canonicalItem := model.Item{
+			Origin: model.OriginShared, Kind: it.Kind, Scope: model.ScopeGlobal,
+			Name: it.Name, Path: canonicalBody, Storage: it.Storage,
+		}
+		if _, err := backup.Create("resync-tool", []model.Item{canonicalItem}); err != nil {
+			return fmt.Errorf("snapshot canonical: %w", err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(canonicalBody), 0o755); err != nil {
 		return err
