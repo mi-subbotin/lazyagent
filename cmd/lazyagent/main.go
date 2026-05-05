@@ -105,6 +105,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		if err := runDoctor(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lazyagent:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	useMock := flag.Bool("mock", false, "use the mock data source instead of real adapters")
 	showVersion := flag.Bool("version", false, "print version information and exit")
