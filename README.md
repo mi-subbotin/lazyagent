@@ -14,7 +14,7 @@ hero so the layout already matches the eventual design.
 <p align="center">
   <a href="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml/badge.svg"></a>
   <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/mi-subbotin/lazyagent?logo=go&logoColor=white"></a>
-  <a href="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml"><img alt="Coverage" src="https://img.shields.io/badge/coverage-63%25-yellowgreen?logo=go&logoColor=white"></a>
+  <a href="https://github.com/mi-subbotin/lazyagent/actions/workflows/ci.yml"><img alt="Coverage" src="https://img.shields.io/badge/coverage-64%25-yellowgreen?logo=go&logoColor=white"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/mi-subbotin/lazyagent?color=blue"></a>
 </p>
 
