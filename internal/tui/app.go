@@ -18,6 +18,7 @@ import (
 
 	"github.com/mi-subbotin/lazyagent/internal/actions"
 	"github.com/mi-subbotin/lazyagent/internal/budget"
+	"github.com/mi-subbotin/lazyagent/internal/duplicates"
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
 	"github.com/mi-subbotin/lazyagent/internal/sources"
@@ -45,6 +46,7 @@ type pendingKind int
 const (
 	pendDelete pendingKind = iota
 	pendFix
+	pendMerge
 )
 
 type pendingOp struct {
@@ -75,6 +77,8 @@ func (p pendingOp) verb() string {
 		return "Delete"
 	case pendFix:
 		return "Fix"
+	case pendMerge:
+		return "Merge"
 	}
 	return "?"
 }
@@ -462,6 +466,20 @@ func (m Model) loadCmd() tea.Cmd {
 		// users can't tell a resumable session from an archived one
 		// until they actually press R.
 		actions.EnrichSessionCwds(all)
+		// PRI-94: tag duplicates by (kind,name) and by content hash.
+		// Pure derived state — DupGroup is reset on every load.
+		dups := duplicates.Find(all)
+		dupIndex := map[string]string{}
+		for _, g := range dups {
+			for _, member := range g.Items {
+				dupIndex[itemDupKey(member)] = g.Key
+			}
+		}
+		for i := range all {
+			if k, ok := dupIndex[itemDupKey(all[i])]; ok {
+				all[i].DupGroup = k
+			}
+		}
 		return itemsLoadedMsg{items: all}
 	}
 }
@@ -862,6 +880,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.resyncPicker = newResyncPicker(it)
+			return m, nil
+		case "M":
+			// PRI-94: merge duplicates — keep the focused item as
+			// canonical, project it onto every (origin,scope) cell
+			// any group member currently lives in. Place auto-snapshots
+			// the displaced bytes via PRI-92.
+			it, ok := m.currentItem()
+			if !ok {
+				return m, nil
+			}
+			if it.DupGroup == "" {
+				m.setToast("merge: not part of a duplicate group")
+				return m, nil
+			}
+			m.pending = &pendingOp{kind: pendMerge, item: it}
 			return m, nil
 		case "H":
 			// Toggle visibility of the Private subgroup under Sessions
@@ -1295,6 +1328,8 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			err = actions.Delete(op.item)
 		case pendFix:
 			err = actions.ApplyFix(op.fix)
+		case pendMerge:
+			err = m.applyMerge(op.item)
 		}
 		if err != nil {
 			m.setToast(formatActionError(op, err))
@@ -2000,6 +2035,7 @@ func helpText() string {
 		"           ~/.lazyagent/library and project back to each chosen cell\n" +
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  S        sync-all: bulk Place every shareable global item to every tool\n" +
+		"  M        merge duplicates (keep this one, project to all)\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
@@ -2046,6 +2082,11 @@ func confirmText(p pendingOp, _ string) string {
 		lines = append(lines, fixDiffPreview(p.fix))
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("Re-validates after write; rolls back if still invalid."))
+	case pendMerge:
+		lines = append(lines, "Keep this entry as canonical and project it")
+		lines = append(lines, "into every cell its duplicates currently occupy.")
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Displaced bytes are snapshotted (PRI-92) before overwrite."))
 	}
 	lines = append(lines, "")
 	lines = append(lines, dimStyle.Render("y to confirm · n / esc to cancel"))
@@ -2448,6 +2489,11 @@ func (m Model) renderTree(w, h int) string {
 					label += " (drift)"
 					drifted = true
 				}
+				if it.DupGroup != "" {
+					if n := m.dupGroupSize(it.DupGroup); n > 1 {
+						label += fmt.Sprintf(" (dup×%d)", n-1)
+					}
+				}
 				// PRI-4: surface the source project for items folded in
 				// from the global indexer. Items in cwd-project don't
 				// carry the Meta key, so they render unchanged.
@@ -2498,6 +2544,30 @@ func (m Model) renderTree(w, h int) string {
 	}
 
 	return joinExactly(lines, h)
+}
+
+// dupGroupSize counts how many items currently share the given
+// duplicates group key. Empty key returns 0.
+func (m Model) dupGroupSize(key string) int {
+	if key == "" {
+		return 0
+	}
+	n := 0
+	for _, it := range m.items {
+		if it.DupGroup == key {
+			n++
+		}
+	}
+	return n
+}
+
+// itemDupKey returns a stable string identifying an item position so
+// loadCmd can map duplicates.Find results back onto the slice it
+// produced. Items inside the same load are uniquely identified by
+// (origin, kind, scope, name, path, configKey).
+func itemDupKey(it model.Item) string {
+	return fmt.Sprintf("%d|%d|%d|%s|%s|%s",
+		it.Origin, it.Kind, it.Scope, it.Name, it.Path, it.ConfigKey)
 }
 
 func lastSeg(p string) string {

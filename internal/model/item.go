@@ -231,4 +231,11 @@ type Item struct {
 	// Sessions tree creates noise (often 5–10× the count of real
 	// chats). The TUI hides them by default; PRI-70.
 	Agent bool
+
+	// DupGroup is the duplicates.DupGroup.Key the item belongs to, or
+	// the empty string when the item is unique. Derived per-load by
+	// internal/duplicates.Find — never persisted on disk. The TUI
+	// uses it both to surface the "(dup×N)" badge and to look up the
+	// rest of the group when the user invokes the merge action. PRI-94.
+	DupGroup string
 }
