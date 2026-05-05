@@ -92,12 +92,31 @@ func canonicalForItem(it model.Item) string {
 // cleanly replaced. Targets that don't exist on disk are left alone —
 // the user explicitly removed those projections via reshare and
 // resync shouldn't resurrect them.
+//
+// Lossy projections (PRI-72) are regenerated via projectLossy when
+// the on-disk projection differs from what the renderer would produce
+// today; presence-only projections that still match are left alone so
+// we don't rewrite TOML files that haven't actually drifted.
 func resyncCanonicalWins(it model.Item, canonical, canonicalBody string) error {
 	source := canonical
 	if it.Storage != model.StorageDir {
 		source = canonicalBody
 	}
 	for _, t := range []model.Origin{model.OriginClaude, model.OriginCodex, model.OriginGemini} {
+		if isLossyProjection(it.Kind, t) {
+			pt := ProjectionTarget{Origin: t, Scope: model.ScopeGlobal}
+			lossyIt := model.Item{Kind: it.Kind, Origin: t, Scope: model.ScopeGlobal, Name: it.Name}
+			if !hasLossyProjection(lossyIt, pt, "") {
+				continue
+			}
+			if !LossyProjectionDrift(lossyIt, canonical, "") {
+				continue
+			}
+			if err := projectLossy(lossyIt, canonicalBody, pt, ""); err != nil {
+				return fmt.Errorf("regenerate lossy %s: %w", t, err)
+			}
+			continue
+		}
 		target, err := projectionPath(it.Kind, it.Name, t, model.ScopeGlobal, "")
 		if err != nil {
 			continue

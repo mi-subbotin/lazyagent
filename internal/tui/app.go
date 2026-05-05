@@ -439,6 +439,15 @@ func (m Model) loadCmd() tea.Cmd {
 			if canonical == "" {
 				canonical = store.CanonicalItemDir(it.Path)
 			}
+			// Lossy projections (codex profile entry, gemini TOML
+			// command) generate target bytes from the canonical .md
+			// rather than mirroring it; byte-for-byte body compare
+			// would always flag them as drifted. PRI-72 routes these
+			// through a regenerate-and-compare detector instead.
+			if actions.IsLossyProjection(it.Kind, it.Origin) {
+				it.Drift = actions.LossyProjectionDrift(*it, canonical, m.projectDir)
+				continue
+			}
 			it.Drift = store.IsDriftedAgainst(*it, canonical)
 		}
 		// Resolve cwd for every session and flag the ones whose project

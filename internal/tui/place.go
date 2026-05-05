@@ -70,7 +70,11 @@ func newPlacePicker(it model.Item, projectDir string) (*placePicker, error) {
 
 	origins := []model.Origin{model.OriginClaude, model.OriginCodex, model.OriginGemini}
 	scopes := []model.Scope{model.ScopeGlobal, model.ScopeLocal}
-	isEntry := it.Storage == model.StorageEntry
+	// Reverse-lossy sources (codex profile, gemini TOML) wear a
+	// StorageEntry / StorageFile-with-toml shape but Place takes them
+	// down the lossless library path via promoteToLibrary, so the
+	// picker treats them like non-entry items. PRI-71.
+	isEntry := it.Storage == model.StorageEntry && !actions.IsLossyReverseSource(it)
 	cells := make([][]placeCell, len(origins))
 	for r, o := range origins {
 		cells[r] = make([]placeCell, len(scopes))

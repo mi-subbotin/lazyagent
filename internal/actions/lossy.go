@@ -1,6 +1,8 @@
 package actions
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/mi-subbotin/lazyagent/internal/model"
 	"github.com/mi-subbotin/lazyagent/internal/parse"
+	"github.com/mi-subbotin/lazyagent/internal/store"
 )
 
 // Lossy projections (PRI-68) generate the target format from the
@@ -101,16 +104,50 @@ func hasLossyProjection(it model.Item, t ProjectionTarget, projectDir string) bo
 	return false
 }
 
-// writeCodexProfile renders the canonical agent .md as a Codex profile
-// entry inside the appropriate config.toml. Frontmatter `model` (if
-// present) carries through; everything else collapses into the
-// `instructions` field. Existing entries at the same key are replaced.
-func writeCodexProfile(body []byte, name string, scope model.Scope, projectDir string) error {
+// renderCodexProfileEntry builds the `[profiles.<name>]` map that
+// writeCodexProfile and the drift detector both produce from the
+// canonical agent .md bytes. Pure: no filesystem touch. Frontmatter
+// `model` (if present) carries through; everything else collapses
+// into the `instructions` field.
+func renderCodexProfileEntry(body []byte) map[string]any {
 	fm := parse.Parse(string(body))
 	entry := map[string]any{"instructions": fm.Body}
 	if v := fm.Fields["model"]; v != "" {
 		entry["model"] = v
 	}
+	return entry
+}
+
+// renderGeminiCommandFile produces the byte-for-byte content
+// writeGeminiCommandFile would write for a given canonical prompt .md.
+// Pure: no filesystem touch. Multi-line bodies use TOML literal-string
+// syntax so embedded backticks / quotes / newlines round-trip
+// unchanged.
+func renderGeminiCommandFile(body []byte) []byte {
+	fm := parse.Parse(string(body))
+	desc := fm.Fields["description"]
+	var b strings.Builder
+	if desc != "" {
+		fmt.Fprintf(&b, "description = %q\n", desc)
+	}
+	if strings.ContainsRune(fm.Body, '\n') {
+		b.WriteString("prompt = '''\n")
+		b.WriteString(fm.Body)
+		if !strings.HasSuffix(fm.Body, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("'''\n")
+	} else {
+		fmt.Fprintf(&b, "prompt = %q\n", fm.Body)
+	}
+	return []byte(b.String())
+}
+
+// writeCodexProfile renders the canonical agent .md as a Codex profile
+// entry inside the appropriate config.toml. Existing entries at the
+// same key are replaced.
+func writeCodexProfile(body []byte, name string, scope model.Scope, projectDir string) error {
+	entry := renderCodexProfileEntry(body)
 	path, key, err := codexProfilePath(name, scope, projectDir)
 	if err != nil {
 		return err
@@ -131,13 +168,8 @@ func writeCodexProfile(body []byte, name string, scope model.Scope, projectDir s
 }
 
 // writeGeminiCommandFile renders the canonical prompt .md as a Gemini
-// commands/<name>.toml. The description field comes from frontmatter
-// `description`; the prompt field is the body, wrapped in TOML
-// multi-line literal-string syntax to preserve embedded backticks /
-// quotes / newlines without escaping.
+// commands/<name>.toml.
 func writeGeminiCommandFile(body []byte, name string, scope model.Scope, projectDir string) error {
-	fm := parse.Parse(string(body))
-	desc := fm.Fields["description"]
 	target, err := geminiCommandPath(name, scope, projectDir)
 	if err != nil {
 		return err
@@ -145,21 +177,87 @@ func writeGeminiCommandFile(body []byte, name string, scope model.Scope, project
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	var b strings.Builder
-	if desc != "" {
-		fmt.Fprintf(&b, "description = %q\n", desc)
+	return os.WriteFile(target, renderGeminiCommandFile(body), 0o644)
+}
+
+// LossyProjectionDrift reports whether `it` is a lossy projection
+// whose on-disk bytes no longer match what regenerating from the
+// canonical .md in `canonicalDir` would produce. PRI-72.
+//
+// Only meaningful for items whose (Kind, Origin) pair maps to a lossy
+// projector — for everything else returns false (no drift to report).
+// Returns false on any read error: surfacing transient I/O hiccups as
+// drift would be noise on a partially-installed library.
+//
+// Codex profile (KindAgent + Origin=Codex): the canonical entry value
+// is built via renderCodexProfileEntry, then JSON-marshalled with
+// sorted keys for stable byte equality against the parsed on-disk
+// entry. Comparing parsed map[string]any directly is brittle because
+// BurntSushi/toml decodes scalars as `interface{}` types whose Go
+// equality depends on which numeric variant the decoder picked.
+//
+// Gemini TOML (KindPrompt + Origin=Gemini): straight byte-compare of
+// the file against renderGeminiCommandFile output. Whitespace matters
+// — a hand-edited file that round-trips through the same renderer
+// won't drift, but stylistic edits (extra blank line, reordered
+// keys) will. That is the intended semantics: any edit the user made
+// at the projection is something Resync canonical-wins will overwrite.
+func LossyProjectionDrift(it model.Item, canonicalDir, projectDir string) bool {
+	if canonicalDir == "" {
+		return false
 	}
-	if strings.ContainsRune(fm.Body, '\n') {
-		b.WriteString("prompt = '''\n")
-		b.WriteString(fm.Body)
-		if !strings.HasSuffix(fm.Body, "\n") {
-			b.WriteString("\n")
+	if !isLossyProjection(it.Kind, it.Origin) {
+		return false
+	}
+	bodyName, ok := store.CanonicalBodyName(it.Kind)
+	if !ok {
+		return false
+	}
+	body, err := os.ReadFile(filepath.Join(canonicalDir, bodyName))
+	if err != nil {
+		return false
+	}
+	switch {
+	case it.Kind == model.KindAgent && it.Origin == model.OriginCodex:
+		path, key, err := codexProfilePath(it.Name, it.Scope, projectDir)
+		if err != nil {
+			return false
 		}
-		b.WriteString("'''\n")
-	} else {
-		fmt.Fprintf(&b, "prompt = %q\n", fm.Body)
+		actual, _, err := parse.ReadEntry(path, key)
+		if err != nil {
+			return false
+		}
+		want := renderCodexProfileEntry(body)
+		return !entryDeepEqual(want, actual)
+	case it.Kind == model.KindPrompt && it.Origin == model.OriginGemini:
+		path, err := geminiCommandPath(it.Name, it.Scope, projectDir)
+		if err != nil {
+			return false
+		}
+		actual, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		return !bytes.Equal(actual, renderGeminiCommandFile(body))
 	}
-	return os.WriteFile(target, []byte(b.String()), 0o644)
+	return false
+}
+
+// entryDeepEqual compares two parsed config-entry values via canonical
+// JSON. BurntSushi/toml's interface{} decoded values aren't directly
+// comparable across re-parses (string vs []byte for some scalars,
+// int64 vs int), so we marshal both sides with json.Marshal — which
+// sorts map keys — and byte-compare the result.
+func entryDeepEqual(a, b any) bool {
+	aj, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bj, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(aj, bj)
 }
 
 // codexProfilePath returns the (config.toml, "profiles/<name>") pair

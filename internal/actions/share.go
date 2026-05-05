@@ -78,6 +78,27 @@ func IsLossyProjection(k model.Kind, target model.Origin) bool {
 	return isLossyProjection(k, target)
 }
 
+// IsLossyReverseSource reports whether `it` is the source side of a
+// lossy projection — a Codex profile entry or a Gemini TOML command
+// file the user opened Place on. Place treats these specially: instead
+// of routing through placeEntry / moving bytes verbatim, it
+// synthesises the canonical .md (frontmatter + body) from the source
+// and projects everything from there. PRI-71.
+//
+// Detection is shape-based, not content-based: any KindAgent +
+// StorageEntry on Codex is a profile entry, any KindPrompt +
+// StorageFile on Gemini is the TOML command shape (the gemini adapter
+// only emits StorageFile for *.toml files, never for *.md).
+func IsLossyReverseSource(it model.Item) bool {
+	switch {
+	case it.Kind == model.KindAgent && it.Origin == model.OriginCodex && it.Storage == model.StorageEntry:
+		return true
+	case it.Kind == model.KindPrompt && it.Origin == model.OriginGemini && it.Storage == model.StorageFile:
+		return true
+	}
+	return false
+}
+
 // canonicalBodyName delegates to store.CanonicalBodyName; the layout
 // is owned by the store package so adapters, Place, and drift detection
 // all agree on a single source of truth.

@@ -63,7 +63,7 @@ var ErrPlaceConflicts = errors.New("place conflicts with existing items")
 // CrossCopy still exist alongside it. Phase 3 routes the TUI through
 // Place and removes the legacy entry points.
 func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
-	if it.Storage == model.StorageEntry {
+	if it.Storage == model.StorageEntry && !IsLossyReverseSource(it) {
 		return placeEntry(it, targets, opts)
 	}
 	if err := checkPlaceSupport(it, targets, opts); err != nil {
@@ -146,7 +146,7 @@ func Place(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
 // Same shape as ShareConflicts so the TUI overlay can render either
 // list with shared rendering code.
 func PlaceConflicts(it model.Item, targets []ProjectionTarget, opts PlaceOpts) ([]ShareConflict, error) {
-	if it.Storage == model.StorageEntry {
+	if it.Storage == model.StorageEntry && !IsLossyReverseSource(it) {
 		if err := checkPlaceEntrySupport(it, targets, opts); err != nil {
 			return nil, err
 		}
@@ -173,8 +173,16 @@ func PlaceConflicts(it model.Item, targets []ProjectionTarget, opts PlaceOpts) (
 // back on the manifest's projected_to list (global only) like
 // CurrentProjections does.
 func CurrentPlaceProjections(it model.Item, projectDir string) []ProjectionTarget {
-	if it.Storage == model.StorageEntry {
+	if it.Storage == model.StorageEntry && !IsLossyReverseSource(it) {
 		return currentEntryProjections(it, projectDir)
+	}
+	// Reverse-lossy source pre-promotion: canonicalForItem returns ""
+	// (no library entry yet), but the source's own (Origin, Scope)
+	// already holds the entry/file we'll round-trip into the library.
+	// Surface that cell so the picker keeps it pre-checked and Place's
+	// add-set diff doesn't accidentally orphan it.
+	if IsLossyReverseSource(it) && canonicalForItem(it) == "" {
+		return []ProjectionTarget{{Origin: it.Origin, Scope: it.Scope}}
 	}
 	canonical := canonicalForItem(it)
 	if canonical == "" {
@@ -259,7 +267,11 @@ func canPlaceEntryKind(k model.Kind) bool {
 // before any disk work. Centralised so Place and PlaceConflicts share
 // the validation surface.
 func checkPlaceSupport(it model.Item, targets []ProjectionTarget, opts PlaceOpts) error {
-	if !canShareKind(it.Kind, it.Storage) {
+	// Reverse-lossy sources (codex profile entry, gemini TOML) have a
+	// non-canonical Storage shape (StorageEntry / StorageFile-with-toml)
+	// that canShareKind rejects, but they still belong on the main path
+	// because promoteToLibrary synthesises canonical .md from them.
+	if !IsLossyReverseSource(it) && !canShareKind(it.Kind, it.Storage) {
 		return fmt.Errorf("%w: kind %s, storage %v", ErrPlaceUnsupported, it.Kind, it.Storage)
 	}
 	for _, t := range targets {
@@ -352,6 +364,14 @@ func placeConflicts(it model.Item, canonical string, add []ProjectionTarget, pro
 // only path forward — Place doesn't try to round-trip user edits back
 // into the canonical .md (Resync canonical-wins is the intended UX).
 func lossyConflict(it model.Item, t ProjectionTarget, projectDir string) (ShareConflict, bool) {
+	// Reverse-lossy first-time Place: the source's own (Origin, Scope)
+	// IS the lossy target — flagging it as a conflict would force the
+	// user to "overwrite" their own bytes on every first promotion.
+	// promoteToLibrary will round-trip them through the library and
+	// projectLossy regenerates the same cell from the new canonical.
+	if IsLossyReverseSource(it) && t.Origin == it.Origin && t.Scope == it.Scope {
+		return ShareConflict{}, false
+	}
 	switch {
 	case it.Kind == model.KindAgent && t.Origin == model.OriginCodex:
 		path, key, err := codexProfilePath(it.Name, t.Scope, projectDir)
@@ -380,6 +400,13 @@ func lossyConflict(it model.Item, t ProjectionTarget, projectDir string) (ShareC
 // checked that no conflicting library entry exists with the same
 // (kind, name); we still re-check here defensively because the
 // library is shared global state.
+//
+// Reverse-lossy sources (codex profile / gemini TOML) take a
+// synthesise path instead of moveFile / moveDir: bytes are projected
+// _from_ the source format _into_ canonical .md, leaving the original
+// in place. After promotion, projectLossy regenerates the source's
+// own (Origin, Scope) cell from the new canonical so the round-trip
+// converges. PRI-71.
 func promoteToLibrary(it model.Item) (string, error) {
 	storeDir, err := store.ItemDir(it.Kind, it.Name)
 	if err != nil {
@@ -394,6 +421,9 @@ func promoteToLibrary(it model.Item) (string, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(storeDir), 0o755); err != nil {
 		return "", err
+	}
+	if IsLossyReverseSource(it) {
+		return reversePromoteToLibrary(it, storeDir, bodyName)
 	}
 	switch it.Storage {
 	case model.StorageDir:
@@ -412,6 +442,92 @@ func promoteToLibrary(it model.Item) (string, error) {
 		return "", ErrPlaceUnsupported
 	}
 	return storeDir, nil
+}
+
+// reversePromoteToLibrary synthesises the canonical .md for a
+// reverse-lossy source and writes it into the library. The source
+// stays where it is on disk: Place's main loop will regenerate the
+// source's (Origin, Scope) cell via projectLossy from the freshly
+// written canonical, which keeps round-trip semantics symmetric with
+// the forward direction.
+func reversePromoteToLibrary(it model.Item, storeDir, bodyName string) (string, error) {
+	var body []byte
+	var err error
+	switch {
+	case it.Kind == model.KindAgent && it.Origin == model.OriginCodex:
+		body, err = synthesiseAgentMDFromCodexProfile(it)
+	case it.Kind == model.KindPrompt && it.Origin == model.OriginGemini:
+		body, err = synthesisePromptMDFromGeminiTOML(it)
+	default:
+		return "", ErrPlaceUnsupported
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		return "", err
+	}
+	target := filepath.Join(storeDir, bodyName)
+	if err := os.WriteFile(target, body, 0o644); err != nil {
+		return "", err
+	}
+	return storeDir, nil
+}
+
+// synthesiseAgentMDFromCodexProfile builds an agent.md from a Codex
+// `[profiles.<name>]` entry. Frontmatter carries the profile name
+// (always) and `model` (when set); the entry's `instructions` field
+// becomes the body. Other Codex-specific fields (approval_policy,
+// sandbox_mode, etc.) are dropped — they have no .md equivalent and
+// would be lost on the next forward projection anyway.
+func synthesiseAgentMDFromCodexProfile(it model.Item) ([]byte, error) {
+	val, _, err := parse.ReadEntry(it.Path, it.ConfigKey)
+	if err != nil {
+		return nil, fmt.Errorf("read codex profile %s/%s: %w", it.Path, it.ConfigKey, err)
+	}
+	m, ok := val.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("codex profile %s is not a map", it.Name)
+	}
+	instructions, _ := m["instructions"].(string)
+	mp, _ := m["model"].(string)
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "name: %s\n", it.Name)
+	if mp != "" {
+		fmt.Fprintf(&b, "model: %s\n", mp)
+	}
+	b.WriteString("---\n")
+	b.WriteString(instructions)
+	if instructions != "" && !strings.HasSuffix(instructions, "\n") {
+		b.WriteString("\n")
+	}
+	return []byte(b.String()), nil
+}
+
+// synthesisePromptMDFromGeminiTOML builds a prompt.md from a Gemini
+// commands/<name>.toml. `description` and the multi-line `prompt`
+// field map to frontmatter description and body respectively; all
+// other TOML keys are dropped (Gemini doesn't define any).
+func synthesisePromptMDFromGeminiTOML(it model.Item) ([]byte, error) {
+	raw, _, err := parse.Read(it.Path)
+	if err != nil {
+		return nil, fmt.Errorf("read gemini toml %s: %w", it.Path, err)
+	}
+	desc, _ := raw["description"].(string)
+	prompt, _ := raw["prompt"].(string)
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "name: %s\n", it.Name)
+	if desc != "" {
+		fmt.Fprintf(&b, "description: %q\n", desc)
+	}
+	b.WriteString("---\n")
+	b.WriteString(prompt)
+	if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+		b.WriteString("\n")
+	}
+	return []byte(b.String()), nil
 }
 
 // writePlaceManifest writes the library manifest with the new
