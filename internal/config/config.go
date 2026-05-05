@@ -28,6 +28,9 @@ type Config struct {
 	Logging LoggingConfig `toml:"logging"`
 	Backup  BackupConfig  `toml:"backup"`
 	Usage   UsageConfig   `toml:"usage"`
+	// Guardrails (PRI-67) — thresholds and disabled list for the
+	// SessionStart hook-driven rules.
+	Guardrails GuardrailsConfig `toml:"guardrails"`
 }
 
 // SearchConfig — global indexer roots and exclusions (PRI-4 / PRI-10).
@@ -79,6 +82,16 @@ type BackupConfig struct {
 	KeepLast int `toml:"keep_last"`
 }
 
+// GuardrailsConfig — thresholds for the PRI-67 guardrails. Disabled
+// lists guardrail names that should be skipped even when explicitly
+// installed; install/uninstall remains the primary on/off switch but
+// this lets a user kill an installed rule without rewriting hooks.
+type GuardrailsConfig struct {
+	TooManySkillsThreshold int      `toml:"too_many_skills_threshold"`
+	MemoryBloatBytes       int      `toml:"memory_bloat_bytes"`
+	Disabled               []string `toml:"disabled"`
+}
+
 // UsageConfig — session-log scan thresholds (PRI-95). UnusedDays is
 // the cutoff for the "(unused Nd)" badge: an item is flagged when its
 // LastSeen is older than this many days. Zero or negative disables the
@@ -126,6 +139,10 @@ func Default() *Config {
 		},
 		Usage: UsageConfig{
 			UnusedDays: 30,
+		},
+		Guardrails: GuardrailsConfig{
+			TooManySkillsThreshold: 100,
+			MemoryBloatBytes:       8192,
 		},
 	}
 }
