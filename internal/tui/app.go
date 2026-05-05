@@ -49,6 +49,11 @@ const (
 	pendDelete pendingKind = iota
 	pendFix
 	pendMerge
+	// pendConvertSkillToAgent (PRI-74 Phase A): mechanical Skill → Agent
+	// rewrite that lands under ~/.lazyagent/library/agents/<name>/.
+	// No LLM, no projection — user re-places the new library agent via
+	// the existing `p` picker.
+	pendConvertSkillToAgent
 )
 
 type pendingOp struct {
@@ -81,6 +86,8 @@ func (p pendingOp) verb() string {
 		return "Fix"
 	case pendMerge:
 		return "Merge"
+	case pendConvertSkillToAgent:
+		return "Convert"
 	}
 	return "?"
 }
@@ -948,6 +955,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.pending = &pendingOp{kind: pendMerge, item: it}
 			return m, nil
+		case ">":
+			// PRI-74 Phase A: deterministic Skill → Agent rewrite. Only
+			// works on a Skill leaf; the actual write happens after the
+			// confirm overlay.
+			it, ok := m.currentItem()
+			if !ok {
+				return m, nil
+			}
+			if it.Kind != model.KindSkill {
+				m.setToast("convert: only works on a Skill")
+				return m, nil
+			}
+			m.pending = &pendingOp{kind: pendConvertSkillToAgent, item: it}
+			return m, nil
 		case "H":
 			// Toggle visibility of the Private subgroup under Sessions
 			// (orchestrator / tmp / tool-internal). Persists in
@@ -1375,6 +1396,7 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		op := *m.pending
 		m.pending = nil
 		var err error
+		var convertedName string
 		switch op.kind {
 		case pendDelete:
 			err = actions.Delete(op.item)
@@ -1382,12 +1404,22 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			err = actions.ApplyFix(op.fix)
 		case pendMerge:
 			err = m.applyMerge(op.item)
+		case pendConvertSkillToAgent:
+			var newAgent model.Item
+			newAgent, err = actions.ConvertSkillToAgent(op.item)
+			if err == nil {
+				convertedName = newAgent.Name
+			}
 		}
 		if err != nil {
 			m.setToast(formatActionError(op, err))
 			return m, nil
 		}
-		m.setToast(fmt.Sprintf("%s ok: %s", op.verb(), op.item.Name))
+		if op.kind == pendConvertSkillToAgent {
+			m.setToast("converted to agent: " + convertedName)
+		} else {
+			m.setToast(fmt.Sprintf("%s ok: %s", op.verb(), op.item.Name))
+		}
 		// Clear glamour cache for the affected path so re-rendering
 		// after reload reflects new content.
 		for k := range m.glamourCache {
@@ -2134,6 +2166,7 @@ func helpText() string {
 		"  R        resync drifted shared item — or resume a session (Sessions kind)\n" +
 		"  S        sync-all: bulk Place every shareable global item to every tool\n" +
 		"  M        merge duplicates (keep this one, project to all)\n" +
+		"  >        convert Skill → Agent (in-code, deterministic)\n" +
 		"  T        resume a session in a new terminal tab (TUI stays open)\n" +
 		"  H        toggle visibility of Private sessions (persists across runs)\n" +
 		"  G        toggle visibility of subagent (Task-spawn) sessions — off by default\n" +
@@ -2187,6 +2220,14 @@ func confirmText(p pendingOp, _ string) string {
 		lines = append(lines, "into every cell its duplicates currently occupy.")
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("Displaced bytes are snapshotted (PRI-92) before overwrite."))
+	case pendConvertSkillToAgent:
+		lines = append(lines, fmt.Sprintf("Convert skill %q to agent?", p.item.Name))
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render(
+			fmt.Sprintf("Will create ~/.lazyagent/library/agents/%s/agent.md", p.item.Name)))
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Body copied verbatim; frontmatter rewritten with model: inherit."))
+		lines = append(lines, dimStyle.Render("Use `p` afterwards to project the new agent onto a tool."))
 	}
 	lines = append(lines, "")
 	lines = append(lines, dimStyle.Render("y to confirm · n / esc to cancel"))
