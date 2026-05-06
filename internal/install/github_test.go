@@ -24,6 +24,21 @@ func TestParseURL(t *testing.T) {
 			want: Spec{Kind: SpecKindRepo, Host: "github.com", Owner: "foo", Repo: "bar"},
 		},
 		{
+			// Shorthand owner/repo without host.
+			in:   "foo/bar",
+			want: Spec{Kind: SpecKindRepo, Host: "github.com", Owner: "foo", Repo: "bar"},
+		},
+		{
+			// Shorthand with .git suffix.
+			in:   "foo/bar.git",
+			want: Spec{Kind: SpecKindRepo, Host: "github.com", Owner: "foo", Repo: "bar"},
+		},
+		{
+			// Shorthand with subtree.
+			in:   "foo/bar/tree/main/x",
+			want: Spec{Kind: SpecKindSubtree, Host: "github.com", Owner: "foo", Repo: "bar", Ref: "main", Path: "x"},
+		},
+		{
 			in:   "https://github.com/foo/bar",
 			want: Spec{Kind: SpecKindRepo, Host: "github.com", Owner: "foo", Repo: "bar"},
 		},
@@ -70,9 +85,10 @@ func TestParseURL_Errors(t *testing.T) {
 		"   ",
 		"https://gitlab.com/foo/bar",
 		"github.com/onlyowner",
-		"https://github.com/foo/bar/raw/main",        // unsupported shape
-		"https://github.com/foo/bar/tree",            // missing ref
-		"https://github.com/foo/bar/blob/main",       // missing path
+		"onlyowner",                            // shorthand single segment
+		"https://github.com/foo/bar/raw/main",  // unsupported shape
+		"https://github.com/foo/bar/tree",      // missing ref
+		"https://github.com/foo/bar/blob/main", // missing path
 	}
 	for _, in := range cases {
 		if spec, err := ParseURL(in); err == nil {

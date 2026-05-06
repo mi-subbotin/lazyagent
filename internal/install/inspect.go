@@ -121,11 +121,16 @@ func inspectSingleFile(cacheDir string, spec *Spec) ([]Candidate, error) {
 
 // classify maps a path inside the extracted tarball to a candidate.
 // Returns ok=false for files we don't know how to install.
+//
+// Skill detection is layout-agnostic: any SKILL.md (case-insensitive)
+// with at least one parent directory marks that parent as a skill.
+// This covers both `skills/<name>/SKILL.md` (Anthropic's reference
+// repo) and `<name>/SKILL.md` at the root (e.g. mattpocock/skills),
+// plus any nesting in between.
 func classify(cacheDir, rel string) (Candidate, bool) {
 	parts := strings.Split(rel, "/")
 	switch {
-	case len(parts) >= 3 && parts[len(parts)-3] == "skills" &&
-		strings.EqualFold(parts[len(parts)-1], "SKILL.md"):
+	case len(parts) >= 2 && strings.EqualFold(parts[len(parts)-1], "SKILL.md"):
 		name := parts[len(parts)-2]
 		return buildCandidate(cacheDir, rel, model.KindSkill, model.StorageDir, name), true
 

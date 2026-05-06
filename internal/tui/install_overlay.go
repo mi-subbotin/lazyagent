@@ -467,8 +467,9 @@ func installOverlayText(ov *installOverlay) string {
 	case phaseInstallURL:
 		fmt.Fprintln(&b, titleStyle.Render("Install from GitHub"))
 		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, "Paste a github.com or gist URL, then enter.")
+		fmt.Fprintln(&b, "Paste a github.com / gist URL or owner/repo shorthand, then enter.")
 		fmt.Fprintln(&b, "Examples:")
+		fmt.Fprintln(&b, dimStyle.Render("  mattpocock/skills"))
 		fmt.Fprintln(&b, dimStyle.Render("  github.com/anthropics/skills"))
 		fmt.Fprintln(&b, dimStyle.Render("  github.com/foo/bar/tree/main/skills/cool"))
 		fmt.Fprintln(&b)

@@ -99,6 +99,30 @@ func TestInspect_SingleFile(t *testing.T) {
 	}
 }
 
+// TestInspect_RootLevelSkill exercises the layout used by repos like
+// mattpocock/skills, where each skill folder sits at the repo root
+// (not under a `skills/` parent dir).
+func TestInspect_RootLevelSkill(t *testing.T) {
+	cache := t.TempDir()
+	plant(t, cache, "ultrathink/SKILL.md", "---\nname: ultrathink\ndescription: think hard\n---\nbody\n")
+	plant(t, cache, "ultrathink/example.md", "asset")
+	plant(t, cache, "another/SKILL.md", "---\nname: another\n---\nbody\n")
+	plant(t, cache, "README.md", "ignored")
+
+	got, err := Inspect(cache, &Spec{Kind: SpecKindRepo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2: %+v", len(got), got)
+	}
+	for _, c := range got {
+		if c.Kind != model.KindSkill || c.Storage != model.StorageDir {
+			t.Errorf("expected KindSkill+StorageDir, got %+v", c)
+		}
+	}
+}
+
 func TestInspect_BrokenFrontmatter(t *testing.T) {
 	cache := t.TempDir()
 	// Unterminated frontmatter — file should still surface, with a

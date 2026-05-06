@@ -46,13 +46,20 @@ type Spec struct {
 
 // ParseURL accepts the canonical github.com / gist URL shapes the
 // roadmap promises. Schemes (https://) are optional; trailing slashes
-// and `.git` suffixes are tolerated.
+// and `.git` suffixes are tolerated. A bare `<owner>/<repo>[/...]`
+// shorthand (no host, no scheme) is treated as github.com — GitHub
+// usernames never contain dots, so a dot-less first segment is the
+// signal that the input is a shorthand rather than a hostname.
 func ParseURL(s string) (*Spec, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, errors.New("empty URL")
 	}
 	if !strings.Contains(s, "://") {
+		head, _, _ := strings.Cut(strings.Trim(s, "/"), "/")
+		if !strings.Contains(head, ".") {
+			s = "github.com/" + strings.TrimLeft(s, "/")
+		}
 		s = "https://" + s
 	}
 	u, err := url.Parse(s)
