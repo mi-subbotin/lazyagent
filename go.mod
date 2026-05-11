@@ -13,7 +13,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
-	golang.org/x/mod v0.35.0
+	golang.org/x/mod v0.36.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
